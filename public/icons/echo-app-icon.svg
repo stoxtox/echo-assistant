@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Echo app icon: the mark in a sunset gradient on a warm graphite rounded square. -->
+  <defs>
+    <radialGradient id="surface" cx="36%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#241F27"/>
+      <stop offset="1" stop-color="#0E0D10"/>
+    </radialGradient>
+    <linearGradient id="sunset" x1="96" y1="400" x2="416" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF6A5B"/>
+      <stop offset="1" stop-color="#FF9F43"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#surface)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="110.5" fill="none" stroke="#F5F1EC" stroke-opacity=".08" stroke-width="3"/>
+  <g fill="none" stroke="url(#sunset)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M224 256H320A48 48 0 1 0 308.77 286.85"/>
+    <path d="M346.31 189.09A100 100 0 1 0 346.31 322.91" opacity=".72"/>
+    <path d="M388.44 158.3A152 152 0 1 0 388.44 353.7" opacity=".44"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Small-size Echo mark: heavier strokes and stronger outer arcs so it stays legible at 16px. -->
+  <defs>
+    <linearGradient id="sunset" x1="10" y1="54" x2="56" y2="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF6A5B"/>
+      <stop offset="1" stop-color="#FF9F43"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0E0D10"/>
+  <g fill="none" stroke="url(#sunset)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M27 32H42A7.5 7.5 0 1 0 40.25 36.82" stroke-width="5.5"/>
+    <path d="M46.39 21.29A16 16 0 1 0 46.39 42.71" stroke-width="5" opacity=".85"/>
+    <path d="M53.27 16.25A24.5 24.5 0 1 0 53.27 47.75" stroke-width="5" opacity=".62"/>
+  </g>
+</svg>

@@ -1,0 +1,17 @@
+# Personal data: everything this install has learned or logged. Never commit or share.
+node_modules/
+data/
+logs/
+models/
+.env
+.env.*
+!.env.example
+*.log
+.echo-port
+.echo-node
+.echo-package
+# Output of `npm run package` and `npm run release`
+dist/
+# The updater's downloads, staging and the previous version (lib/updater.js)
+.echo-update/
+.DS_Store

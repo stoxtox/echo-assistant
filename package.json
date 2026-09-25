@@ -1,0 +1,48 @@
+{
+  "name": "echo",
+  "version": "1.0.1",
+  "description": "Echo: a voice assistant that runs Claude Code workers across your projects",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "start": "node supervisor.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "serve": "node --env-file-if-exists=.env server.js",
+    "check": "tsc -p jsconfig.json",
+    "review-checks": "node scripts/review-checks.js",
+    "build": "npm run check",
+    "setup:whisper": "zsh scripts/setup-whisper.sh",
+    "icons": "zsh scripts/build-icons.sh",
+    "package": "node scripts/package.js",
+    "make-share": "node scripts/package.js",
+    "privacy-check": "node scripts/privacy-check.js",
+    "install-echo": "zsh scripts/install.sh",
+    "build-app": "bash scripts/build-app.sh",
+    "release": "node scripts/release.js",
+    "release:publish": "node scripts/publish-release.js",
+    "publish-repo": "node scripts/publish-repo.js",
+    "release:simulate": "node scripts/simulate-release.js",
+    "update": "node scripts/update.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.282",
+    "kokoro-js": "^1.2.1",
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/ws": "^8.18.1",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "onnxruntime-node": "^1.30.0"
+  }
+}
