@@ -46,7 +46,7 @@ const tasks = new Map();
 function connect() {
   ws = new WebSocket(`ws://${location.host}`);
   // Connected is the normal state, so it shows nothing; only a lost connection gets a pill.
-  ws.onopen = () => { els.dot.hidden = true; };
+  ws.onopen = () => { els.dot.hidden = true; if (voiceBusySent) reportVoiceBusy(true); };
   ws.onclose = () => { els.dot.hidden = false; setTimeout(connect, 1500); };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
 }
@@ -68,6 +68,7 @@ function handle(msg) {
       renderCosts();
       if (!resetting) els.restartOverlay.hidden = true;
       for (const r of msg.messageConfirms || []) showMessageConfirm(r);
+      syncTaskCards(msg.tasks);
       if (msg.update) setUpdateStatus(msg.update);
       break;
     case 'update': setUpdateStatus(msg.status, msg.notice); break;
@@ -114,7 +115,9 @@ function handle(msg) {
     }
     case 'task_log': appendLog(msg.taskId, msg.entry); break;
     case 'settings': applySettings(msg.settings); break;
-    case 'approval_stale': toast('That request was already answered.'); break;
+    case 'approval_stale': toast('That request was already answered.'); settleTaskCard(msg.approvalId, null); break;
+    case 'task_event': addTaskCard(msg.event); if (msg.event.kind === 'approval') sfx('attention'); break;
+    case 'approval_resolved': settleTaskCard(msg.approvalId, msg.allowed); break;
     case 'message_confirm': showMessageConfirm(msg.request); sfx('attention'); break;
     case 'message_resolved': settleMessageConfirm(msg); break;
   }
@@ -166,6 +169,77 @@ function settleMessageConfirm(r) {
   c.sendBtn.remove();
   c.card.classList.add(r.sent ? 'is-sent' : 'is-cancelled');
   c.left.textContent = r.stale ? 'Already handled' : r.sent ? 'Sent ✓' : r.error ? `Not sent: ${r.error}` : r.by === 'expired' ? 'Expired, not sent' : 'Cancelled';
+}
+
+/* ---------- Task update cards ---------- */
+// Task events show in the chat as compact cards, clearly not conversation: a task chip, a status
+// colour and one line. Approvals get Approve / Deny right on the card, and collapse once answered
+// (here, in the Workers tab, or by voice).
+const taskCards = new Map(); // approvalId -> { card, status, actions }
+const CARD = {
+  approval: ['waiting', 'Needs your OK'],
+  done: ['done', 'Done'],
+  failed: ['failed', 'Failed'],
+  stopped: ['stopped', 'Stopped'],
+  review: ['review', 'Ready to review'],
+};
+function showTask(id) {
+  document.querySelector('.tab[data-view="tasks"]')?.dispatchEvent(new Event('click'));
+  const node = els.taskList.querySelector(`[data-id="${id}"]`);
+  node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  node?.classList.add('flash');
+  setTimeout(() => node?.classList.remove('flash'), 1400);
+}
+/** @param {{ kind: string, taskId: number, title?: string, where?: string, text?: string, approvalId?: string, level?: string }} ev */
+function addTaskCard(ev) {
+  if (ev.approvalId && taskCards.has(ev.approvalId)) return;
+  els.chatEmpty.hidden = true;
+  const [tone, label] = CARD[ev.kind] || ['done', 'Update'];
+  const card = el('div', { className: `msg task-card ${tone}` });
+  card.setAttribute('role', 'group');
+  card.setAttribute('aria-label', `Task update: ${ev.title || `task ${ev.taskId}`}, ${label}`);
+  const chip = button(`#${ev.taskId}`, 'task-chip', () => showTask(ev.taskId));
+  chip.title = 'Show this task';
+  const status = el('span', { className: 'task-card-status' }, ev.kind === 'approval' && ev.level === 'risky' ? 'Needs your OK · risky' : label);
+  const head = el('div', { className: 'task-card-head' });
+  head.append(chip, el('span', { className: 'task-card-title' }, ev.title || ''), status);
+  const line = el('div', { className: 'task-card-line' }, ev.text || '');
+  line.title = ev.text || '';
+  card.append(head, line);
+  if (ev.kind === 'approval' && ev.approvalId) {
+    const actions = el('div', { className: 'task-card-actions' });
+    const answer = (allow) => {
+      card.classList.add('sending');
+      for (const b of actions.querySelectorAll('button')) b.disabled = true;
+      send({ type: 'approve', taskId: ev.taskId, approvalId: ev.approvalId, allow });
+    };
+    actions.append(button('Deny', 'ghost small', () => answer(false)), button('Approve', 'small', () => answer(true)));
+    card.append(actions);
+    taskCards.set(ev.approvalId, { card, status, actions });
+  }
+  els.transcript.append(card);
+  scrollDown();
+}
+/** An approval was answered: the card shrinks to one line saying how. @param {boolean | null} allowed */
+function settleTaskCard(approvalId, allowed) {
+  const c = approvalId && taskCards.get(approvalId);
+  if (!c) return;
+  taskCards.delete(approvalId);
+  c.actions.remove();
+  c.card.classList.remove('waiting', 'sending');
+  c.card.classList.add('handled', allowed === false ? 'denied' : 'allowed');
+  c.status.textContent = allowed === null ? 'Already answered' : allowed ? 'Approved ✓' : 'Denied';
+}
+/** After a reconnect: cards for approvals still waiting, and handled ones collapsed. */
+function syncTaskCards(list) {
+  const waiting = new Set();
+  for (const t of list || []) {
+    const a = t.pendingApproval;
+    if (!a) continue;
+    waiting.add(a.id);
+    addTaskCard({ kind: 'approval', taskId: t.id, title: t.title, where: t.project, text: a.reason, approvalId: a.id, level: a.level });
+  }
+  for (const id of [...taskCards.keys()]) if (!waiting.has(id)) settleTaskCard(id, null);
 }
 
 let toastTimer = null;
@@ -431,11 +505,14 @@ function sfx(kind) {
 }
 
 /* ---------- Speech output ---------- */
-// Each sentence is fetched as soon as it arrives (so audio is ready early) and played in order.
+// Each piece (a clause or sentence) is fetched as soon as it arrives, so audio is ready early, and
+// the pieces are scheduled back to back on the audio clock: no gaps between them.
 const speechQueue = [];
 let playing = null;
 let speaking = false;
 let speechGen = 0;
+let playEnd = 0; // audio-clock time when everything scheduled so far has been said
+const sources = new Set(); // audio still sounding (the previous piece can overlap the handover)
 
 function splitSentences(text) {
   return (text.match(/[^.!?\n]+[.!?]*["')\]]?/g) || [text]).map((s) => s.trim()).filter((s) => s.length > 1);
@@ -472,38 +549,64 @@ function speak(text, bubble = null) {
   speechQueue.push(item);
   setSpeaking(true);
   if (!playing) playNext();
+  else playing.handOver?.();
 }
 
 async function playNext() {
   const item = speechQueue.shift();
-  if (!item) { playing = null; setSpeaking(false); return; }
+  if (!item) {
+    playing = null;
+    // The last piece may still be sounding after an early handover.
+    if (!sources.size) setSpeaking(false);
+    return;
+  }
   playing = item;
+  let browser = false;
   try {
     if (!item.audio) throw new Error('browser voice');
     const buffer = await item.audio;
     if (item.gen !== speechGen) return;
     await new Promise((resolve) => {
       const src = ctx.createBufferSource();
+      // Right after the piece before it (or now, if there's been a pause).
+      const at = Math.max(ctx.currentTime + 0.02, playEnd);
+      playEnd = at + buffer.duration;
       if (item.chunk) {
         const times = item.words ? alignTimings(item.text, item.words) : null;
         const bounds = times ? undefined : speechBounds(buffer.getChannelData(0), buffer.sampleRate);
-        karaoke.play(item.chunk, { start: ctx.currentTime, duration: buffer.duration, times, bounds });
+        karaoke.play(item.chunk, { start: at, duration: buffer.duration, times, bounds });
       }
       src.buffer = buffer;
       src.connect(outAnalyser);
+      sources.add(src);
+      let handed = false;
+      const handOver = () => { if (!handed) { handed = true; resolve(); } };
       // onended never fires if the context stalls (suspended, device change), which would leave
       // Echo "speaking" forever and everything that waits on her stuck; so cap it on the wall clock.
-      const guard = setTimeout(() => { try { src.stop(); } catch {} resolve(); }, buffer.duration * 1000 + 3000);
-      src.onended = () => { clearTimeout(guard); resolve(); };
-      item.stop = () => { clearTimeout(guard); try { src.stop(); } catch {} resolve(); };
-      src.start();
+      const guard = setTimeout(() => { try { src.stop(); } catch {} ended(); }, (playEnd - ctx.currentTime) * 1000 + 3000);
+      const ended = () => {
+        clearTimeout(guard);
+        sources.delete(src);
+        karaoke.finish(item.chunk);
+        handOver();
+        if (!sources.size && !playing && !speechQueue.length) setSpeaking(false);
+      };
+      src.onended = ended;
+      item.stop = () => { try { src.stop(); } catch {} ended(); };
+      // As soon as the next piece is waiting, move on to it: it's scheduled to start exactly
+      // when this one ends. (speak() calls handOver when a piece arrives later.)
+      item.handOver = handOver;
+      if (speechQueue.length) handOver();
+      src.start(at);
     });
   } catch {
     if (item.gen !== speechGen) return;
+    browser = true;
     await browserSpeak(item);
   }
-  karaoke.finish(item.chunk);
+  if (browser) karaoke.finish(item.chunk);
   if (item.gen === speechGen) playNext();
+  else if (playing === item) playing = null;
 }
 
 function browserSpeak(item) {
@@ -523,6 +626,16 @@ function browserSpeak(item) {
   });
 }
 
+// Task events wait while Echo is speaking or hearing you, so they never cut in (the server holds
+// them: dispatcher.setVoiceBusy).
+let voiceBusySent = false;
+function reportVoiceBusy(force = false) {
+  const b = Boolean(speaking || hearing || transcribing || listening && spaceHeld);
+  if (b === voiceBusySent && !force) return;
+  voiceBusySent = b;
+  send({ type: 'voice_busy', busy: b });
+}
+
 function setSpeaking(on) {
   if (speaking === on) return;
   speaking = on;
@@ -537,6 +650,9 @@ function hush() {
   playing?.stop?.();
   playing?.controller?.abort();
   playing = null;
+  for (const src of sources) { try { src.stop(); } catch {} }
+  sources.clear();
+  playEnd = 0;
   speechSynthesis.cancel();
   karaoke.stopAll();
   setSpeaking(false);
@@ -798,6 +914,8 @@ function resumeHandsFree() {
 /* ---------- Orb + voice visual ---------- */
 function renderOrb() {
   viz.setState(vizState());
+  reportVoiceBusy();
+  heroSize();
   updatePiano();
   els.mic.classList.toggle('listening', listening);
   els.mic.classList.toggle('speaking', speaking);
@@ -843,6 +961,33 @@ darkScheme.addEventListener('change', () => viz.setTheme(darkScheme.matches ? 'd
 function vizState() {
   return speaking ? 'speaking' : listening ? 'listening' : busy || transcribing ? 'thinking' : 'idle';
 }
+
+// The voice is full size while Echo speaks, listens or works. After a few quiet seconds it eases
+// down (over ~4.5 s) to a small glow at the top and the chat takes the space; it grows back as
+// soon as something starts. The easing is CSS (.hero.compact), and reduced motion skips it.
+const HERO_IDLE_MS = 2500;
+/** @type {any} */
+let heroTimer = 0;
+function heroSize() {
+  // Hands-free keeps the mic open all the time, so there only hearing you counts as listening.
+  const active = speaking || busy || transcribing || hearing || (listening && !els.handsFree.checked);
+  // On the empty welcome screen there's nothing to make room for.
+  if (active || !els.chatEmpty.hidden) {
+    clearTimeout(heroTimer);
+    heroTimer = 0;
+    els.hero.classList.remove('compact');
+    return;
+  }
+  if (heroTimer || els.hero.classList.contains('compact')) return;
+  heroTimer = setTimeout(() => {
+    heroTimer = 0;
+    heroSize.check();
+  }, HERO_IDLE_MS);
+}
+heroSize.check = () => {
+  const active = speaking || busy || transcribing || hearing || (listening && !els.handsFree.checked);
+  if (!active && els.chatEmpty.hidden) els.hero.classList.add('compact');
+};
 
 /* ---------- Ambient piano ---------- */
 // Gentle generative piano while workers run and Echo is quiet; it ducks under her voice

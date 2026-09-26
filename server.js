@@ -6,9 +6,10 @@ import { WebSocketServer } from 'ws';
 import { config, APP_DIR } from './lib/config.js';
 import { TaskManager } from './lib/tasks.js';
 import { ApprovalRelay } from './lib/approvals.js';
-import { Dispatcher, openTerminal } from './lib/dispatcher.js';
+import { Dispatcher, openTerminal, FILLERS } from './lib/dispatcher.js';
 import { listProjects } from './lib/projects.js';
-import { synthesize, listVoices, warmUp, wordsHeader, voiceStatus } from './lib/voice.js';
+import { synthesize, listVoices, warmUp, wordsHeader, voiceStatus, prewarmPhrases } from './lib/voice.js';
+import { ACKS } from './lib/speech.js';
 import { getSettings, saveSettings, markFirstRun, PERSONALITIES } from './lib/settings.js';
 import { onboardingState, saveOnboarding, wipePersonalData } from './lib/onboarding.js';
 import { SelfImprove, audit } from './lib/selfimprove.js';
@@ -20,6 +21,7 @@ import { Corrector } from './lib/correct.js';
 import { loadVocab, setWords, vocabularyTerms } from './lib/vocab.js';
 import { Updater } from './lib/updater.js';
 import { saveAttachment, findAttachment, resolveAttachments, MAX_ATTACHMENT_BYTES } from './lib/attachments.js';
+import { ClaudeAuth } from './lib/claudeauth.js';
 
 const RESTART_CODE = 75;
 // A fresh install (or one just reset) opens with the setup wizard, and its projects folder exists.
@@ -38,6 +40,7 @@ const updater = new Updater({
 });
 updater.on('status', (status) => broadcast({ type: 'update', status }));
 const corrector = new Corrector();
+const claudeAuth = new ClaudeAuth();
 corrector.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assistant', usd) }));
 
 /* ---------- conversation log (for reviewing and improving Echo) ---------- */
@@ -123,6 +126,7 @@ async function api(req, res, url) {
       const { projectsDir, onboarded, ...patch } = await readJson(req);
       const next = saveSettings(patch);
       if (['assistantName', 'userName', 'personality', 'beginnerMode', 'interests'].some((k) => JSON.stringify(before[k]) !== JSON.stringify(next[k]))) dispatcher.reload();
+      if (['ttsProvider', 'voice', 'speed'].some((k) => before[k] !== next[k])) prewarmVoice(next);
       broadcast({ type: 'settings', settings: next });
       return sendJson(res, next);
     }
@@ -138,6 +142,18 @@ async function api(req, res, url) {
       broadcastSelf();
       return sendJson(res, { ok: true, ...out, hasPin: selfImprove.hasPin() });
     }
+    case 'GET /api/claude/status':
+      return sendJson(res, await claudeAuth.status());
+    case 'POST /api/claude/login': {
+      // Opens the Claude sign-in in the browser; the wizard polls GET /api/claude/status.
+      const { method } = await readJson(req);
+      return sendJson(res, { ok: true, login: claudeAuth.startLogin(method === 'api' ? 'api' : 'subscription') });
+    }
+    case 'POST /api/claude/login/cancel':
+      claudeAuth.cancelLogin();
+      return sendJson(res, { ok: true });
+    case 'POST /api/claude/test':
+      return sendJson(res, await claudeAuth.test());
     case 'POST /api/permissions/test': {
       const { kind } = await readJson(req);
       return sendJson(res, await quick.testPermission(kind));
@@ -310,6 +326,10 @@ wss.on('connection', (ws) => {
         case 'interrupt':
           dispatcher.interrupt();
           break;
+        case 'voice_busy':
+          // The page is speaking or hearing the user: task events wait (lib/dispatcher.js).
+          dispatcher.setVoiceBusy(ws, Boolean(msg.busy));
+          break;
         case 'new_conversation':
           dispatcher.newConversation();
           broadcast({ type: 'say', text: 'Starting a fresh conversation.' });
@@ -363,6 +383,7 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ type: 'error', text: e.message }));
     }
   });
+  ws.on('close', () => dispatcher.setVoiceBusy(ws, false));
 });
 
 /* ---------- speech: correct, log, dispatch ---------- */
@@ -372,6 +393,8 @@ const sttLog = path.join(config.dataDir, 'stt-log.jsonl');
  * @param {{ uncertain?: Array<{ word: string, confidence: number }>, engine?: string, sttMs?: number, lowOverall?: boolean }} [opts]
  */
 async function handleUtterance(raw, { uncertain = [], engine, sttMs = 0, lowOverall = false } = {}) {
+  // A quick "Sure, checking." right away, while the words are corrected and the reply is written.
+  dispatcher.acknowledge(raw);
   const s = getSettings();
   const fixed = await corrector.correct(raw, { uncertain, recent, smart: s.smartCorrection });
   const entry = { at: new Date().toISOString(), engine, sttMs, fixMs: fixed.ms, raw, text: fixed.text, changes: fixed.changes, unsure: fixed.unsure, smart: fixed.smart, timedOut: Boolean(fixed.timedOut) };
@@ -423,6 +446,18 @@ new ApprovalRelay(tasks, (textIn, opts) => {
   logConvo('Event', textIn);
   dispatcher.notify(textIn, opts);
 });
+// Compact "task update" cards in the chat (approvals get Approve / Deny right on the card).
+const firstSentence = (s) => (String(s || '').replace(/\s+/g, ' ').trim().match(/^.{1,160}?[.!?](?=\s|$)/)?.[0] || String(s || '').trim().slice(0, 160));
+const taskCard = (t, kind, extra = {}) =>
+  broadcast({ type: 'task_event', event: { kind, taskId: t.id, title: t.title, where: t.kind === 'research' ? 'Research' : t.kind === 'self' ? 'Echo' : t.project, at: new Date().toISOString(), ...extra } });
+tasks.on('approval', (t) => {
+  const a = t.pendingApproval;
+  if (a) taskCard(t, 'approval', { approvalId: a.id, level: a.level, text: a.reason });
+});
+tasks.on('finished', (t) => {
+  if (t.kind !== 'self') taskCard(t, t.status, { text: firstSentence(t.summary) || (t.status === 'done' ? 'Finished.' : 'Stopped with an error.') });
+});
+tasks.on('stopped', (t) => taskCard(t, 'stopped', { text: 'Stopped.' }));
 tasks.on('approval_resolved', (t, r) => broadcast({ type: 'approval_resolved', taskId: t.id, approvalId: r.id, allowed: r.allowed, by: r.by }));
 tasks.on('finished', (t) => {
   if (t.kind === 'self') return; // announced once the review is ready
@@ -449,6 +484,7 @@ selfImprove.on('review', (t) => {
   broadcast({ type: 'task', task: slim(t) });
   broadcastSelf();
   const r = t.self.review;
+  taskCard(t, t.self.state === 'review' ? 'review' : 'done', { text: t.self.state === 'review' ? `Ready to review: ${r.files.length} file${r.files.length === 1 ? '' : 's'} changed. Open the Workers tab to merge or discard.` : firstSentence(t.summary) });
   if (t.self.state === 'review') {
     const checks = Object.entries(r.checks).map(([k, v]) => `${k} ${v.ok ? 'passed' : 'FAILED'}`).join(', ');
     notifyTask(t, `Self-improvement task ${t.id} is ready for review in the Echo window. It changed ${r.files.length} file(s): ${r.files.slice(0, 6).join(', ')}. Checks: ${checks}. Worker summary: ${t.summary} Tell the user to review the diff and click Merge or Discard in the window.`);
@@ -527,11 +563,18 @@ async function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+/** The acknowledgements and fillers, rendered ahead in the chosen voice so they play instantly. */
+function prewarmVoice(s = getSettings()) {
+  if (s.ttsProvider !== 'kokoro') return;
+  prewarmPhrases([...Object.values(ACKS).flat(), ...Object.values(FILLERS).flat()], { voice: s.voice, speed: s.speed }).catch(() => {});
+}
+
 /* ---------- startup ---------- */
 server.listen(config.port, '127.0.0.1', () => {
   dispatcher.start();
   warmUp();
   const s = getSettings();
+  prewarmVoice(s);
   if (resolveEngine(s.sttEngine) === 'whisper') startWhisper().then(() => console.log('[stt] local Whisper ready')).catch((e) => console.error('[stt]', e.message));
   if (s.smartCorrection) corrector.warmUp();
   tasks.backfillTitles();

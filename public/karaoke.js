@@ -163,6 +163,8 @@ export function createKaraoke({ now }) {
   const pending = new WeakMap(); // bubble -> chunks not yet finished
   const open = new WeakSet(); // bubbles still streaming text
   let active = null; // the chunk playing now
+  /** @type {any[]} */
+  let upcoming = []; // chunks scheduled to start later (pieces are queued back to back)
   let raf = 0;
 
   /** The unbound rest of a bubble's text lives in a trailing span, so it can be dimmed. */
@@ -243,10 +245,17 @@ export function createKaraoke({ now }) {
 
   function tick() {
     raf = 0;
-    if (!active || !active.times) return;
-    const i = wordAt(active.times, now() - active.start);
-    moveTo(active, Math.min(i, active.spans.length - 1));
-    raf = requestAnimationFrame(tick);
+    const t = now();
+    while (upcoming.length && t >= upcoming[0].start) {
+      // The next piece has started: the one before it is all said.
+      if (active && active !== upcoming[0]) moveTo(active, active.spans.length);
+      active = upcoming.shift();
+    }
+    if (active?.times) {
+      const i = wordAt(active.times, t - active.start);
+      moveTo(active, Math.min(i, active.spans.length - 1));
+    }
+    if (active?.times || upcoming.length) raf = requestAnimationFrame(tick);
   }
 
   /**
@@ -258,7 +267,9 @@ export function createKaraoke({ now }) {
     if (!chunk || chunk.done) return;
     chunk.times = times?.length === chunk.spans.length ? times : estimateTimings(chunk.text, duration, bounds);
     chunk.start = start;
-    active = chunk;
+    // Scheduled after the piece playing now: it takes over when its audio starts.
+    if (active && !active.done && start > now()) upcoming.push(chunk);
+    else active = chunk;
     if (!raf) raf = requestAnimationFrame(tick);
   }
 
@@ -274,6 +285,7 @@ export function createKaraoke({ now }) {
     if (!chunk || chunk.done) return;
     chunk.done = true;
     moveTo(chunk, chunk.spans.length);
+    upcoming = upcoming.filter((c) => c !== chunk);
     if (active === chunk) active = null;
     const left = (pending.get(chunk.el) || 1) - 1;
     pending.set(chunk.el, left);
@@ -283,6 +295,7 @@ export function createKaraoke({ now }) {
   /** Barge-in or stop: everything is instantly normal text. */
   function stopAll() {
     active = null;
+    upcoming = [];
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
     for (const el of live) {

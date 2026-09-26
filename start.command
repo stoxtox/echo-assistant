@@ -7,6 +7,10 @@ cd "$(dirname "$0")" || exit 1
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh" >/dev/null 2>&1
 export PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+# The Node.js the installer set up: .echo-node, else Echo's own copy in ~/.echo/node.
+saved="$(cat .echo-node 2>/dev/null)"
+if [ -n "$saved" ] && [ -x "$saved" ]; then export PATH="${saved:h}:$PATH"
+elif [ -x "$HOME/.echo/node/bin/node" ]; then export PATH="$HOME/.echo/node/bin:$PATH"; fi
 
 PORT="${VOICEOPS_PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port)}"
 export VOICEOPS_PORT="${PORT:-4777}"

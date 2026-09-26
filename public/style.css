@@ -326,6 +326,26 @@ main {
 .orb:active { transform: scale(.985); }
 .orb:focus-visible { outline-offset: 6px; }
 .hero-text { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; max-width: 100%; }
+/* Adaptive size (app.js heroSize): full while Echo speaks, listens or works; after a few quiet
+   seconds .compact eases it down to a small glow at the top, slowly, and the chat (whose top
+   padding follows the hero's height) takes the space. Growing back is quicker. */
+.stage { --compact: 76px; --viz-compact: .365; }
+.hero, .stage, .orb, #viz { transition-duration: 1.1s; transition-timing-function: cubic-bezier(.2, .8, .2, 1); }
+.hero { transition-property: padding, gap; }
+.stage, .orb { transition-property: width, height; }
+#viz { transition-property: transform; }
+.hero.compact { padding-top: 8px; gap: 2px; }
+.hero.compact .stage { width: var(--compact); height: var(--compact); }
+.hero.compact .orb { width: calc(var(--compact) - 8px); height: calc(var(--compact) - 8px); }
+.hero.compact #viz { transform: translate(-50%, -50%) scale(var(--viz-compact)); }
+.hero.compact, .hero.compact .stage, .hero.compact .orb, .hero.compact #viz { transition-duration: 4.5s; transition-timing-function: cubic-bezier(.45, 0, .2, 1); }
+.hero .assistant-name, .hero .state { transition: font-size 1.1s var(--ease), opacity 1.1s var(--ease); }
+.hero.compact .assistant-name { font-size: 14px; transition-duration: 4.5s; }
+.hero.compact .interim:empty { min-height: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .hero, .stage, .orb, #viz, .hero .assistant-name, .hero .state,
+  .hero.compact, .hero.compact .stage, .hero.compact .orb, .hero.compact #viz { transition: none; }
+}
 .assistant-name { font-weight: 650; font-size: 17px; letter-spacing: -.01em; }
 .state { font-size: 12.5px; color: var(--muted); text-align: center; min-height: 20px; }
 .state kbd { font-size: 11px; }
@@ -470,6 +490,42 @@ main {
 .confirm-left { flex: 1; font-size: 12px; }
 .msg.confirm-card.is-sent, .msg.confirm-card.is-cancelled { background: var(--panel); border-color: var(--line); }
 .msg.confirm-card.is-sent .confirm-left { color: var(--ok); }
+
+/* Task update cards: events from workers, clearly not conversation. A full-width, low card with a
+   coloured edge, a task chip, a status and one line; approvals carry Approve / Deny and shrink
+   once answered. */
+.msg.task-card {
+  --tone: var(--muted);
+  align-self: stretch; max-width: none; white-space: normal;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 12px;
+  padding: 8px 10px 8px 14px; border-radius: 12px; font-size: 13px;
+  background: color-mix(in srgb, var(--tone) 6%, var(--bg)); border: 1px solid color-mix(in srgb, var(--tone) 28%, var(--line));
+  box-shadow: inset 3px 0 0 var(--tone);
+}
+.msg.task-card.done { --tone: var(--ok); }
+.msg.task-card.failed { --tone: var(--bad); }
+.msg.task-card.waiting { --tone: var(--warn); }
+.msg.task-card.review { --tone: var(--accent); }
+.msg.task-card.stopped, .msg.task-card.handled { --tone: var(--muted); }
+.task-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; grid-column: 1; }
+.task-chip {
+  flex: none; font: 600 11.5px/1 var(--mono); padding: 4px 7px; border-radius: 7px;
+  background: color-mix(in srgb, var(--tone) 16%, var(--panel)); color: var(--ink); border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+}
+.task-chip:hover { filter: none; border-color: var(--tone); }
+.task-card-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-status { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--tone); margin-left: auto; }
+.task-card-line { grid-column: 1; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; }
+.msg.task-card.sending { opacity: .7; }
+.msg.task-card.handled { padding-top: 5px; padding-bottom: 5px; }
+.msg.task-card.handled .task-card-line { display: none; }
+.msg.task-card.handled.allowed .task-card-status { color: var(--ok); }
+.task.flash { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow .3s; }
+@media (max-width: 520px) {
+  .msg.task-card { grid-template-columns: minmax(0, 1fr); }
+  .task-card-actions { grid-column: 1; grid-row: auto; justify-content: flex-end; }
+}
 
 /* grouped low-risk approvals */
 .approval-group {
@@ -876,6 +932,24 @@ body.wiz-open { overflow: hidden; }
 .wiz-pins { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .wiz-pins > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .wiz-skip { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 14px; border: 1px dashed var(--line-strong); font-size: 13px; color: var(--muted); }
+/* Sign in to Claude */
+.wiz-signin { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line); transition: background .25s, border-color .25s; }
+.wiz-signin.busy { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.wiz-signin.ok { background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.wiz-signin.bad { background: color-mix(in srgb, var(--bad) 8%, var(--panel)); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.wiz-signin-ic { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--bg); border: 1px solid var(--line); }
+.wiz-signin.ok .wiz-signin-ic { background: var(--ok); color: var(--on-accent); border-color: transparent; }
+.wiz-signin-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.wiz-signin-text strong { color: var(--ink); font-size: 14.5px; }
+.wiz-signin-text .wiz-link { margin-top: 4px; }
+.wiz-signin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.wiz-signin-actions .wiz-link { align-self: center; }
+.wiz-signin-btn { padding: 11px 20px; border-radius: 12px; font-size: 15px; }
+.wiz-plans { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: -4px; }
+.wiz-plan { display: flex; flex-direction: column; gap: 5px; padding: 13px 14px; border-radius: 14px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.wiz-plan strong { color: var(--ink); font-size: 13.5px; font-weight: 650; }
+.wiz-plan .wiz-link { font-size: 12.5px; margin-top: auto; padding-top: 2px; }
+@media (max-width: 560px) { .wiz-plans { grid-template-columns: 1fr; } }
 .wiz-done-card { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 16px; font-size: 14px; color: var(--ink); background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); }
 .wiz-done-ic { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--ok); color: var(--on-accent); flex: none; }
 @media (prefers-color-scheme: light) { .wiz-done-ic { color: #fff; } }
@@ -958,7 +1032,7 @@ body.wiz-open { overflow: hidden; }
   .approval-group { margin: 0 14px 6px; }
 }
 @media (max-width: 520px) {
-  .stage { width: 168px; height: 168px; --viz-base: 240px; }
+  .stage { width: 168px; height: 168px; --viz-base: 240px; --compact: 64px; --viz-compact: .38; }
   .orb { width: 150px; height: 150px; }
   .hero { padding-top: 10px; }
   .msg { max-width: 92%; }
@@ -988,7 +1062,7 @@ body.wiz-open { overflow: hidden; }
 }
 
 @media (max-height: 760px) {
-  .stage { width: 150px; height: 150px; --viz-base: 216px; }
+  .stage { width: 150px; height: 150px; --viz-base: 216px; --compact: 64px; --viz-compact: .43; }
   .orb { width: 134px; height: 134px; }
   .hero { padding-top: 8px; }
 }

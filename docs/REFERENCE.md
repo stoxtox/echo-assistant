@@ -134,7 +134,7 @@ Echo can be given to someone who isn't a developer. **[GETTING_STARTED.md](GETTI
   - `/Users/<name>` paths
   - real-looking phone numbers and emails
   - this install's personal words: your Mac and git names, plus your name, favorites, vocabulary and project names read from your data folder at check time
-- **Install:** double-click `install.command` (`scripts/install.sh`). It installs Node.js if needed (nvm) and the packages, installs Claude Code and walks through the Claude sign-in (each person needs their own Claude subscription), optionally sets up Whisper and the Kokoro voice, and builds the native `~/Applications/Echo.app` (`macos/`, `scripts/build-app.sh`; `npm run build-app` for your own copy), falling back to a browser launcher (`scripts/launcher.sh`) without Apple's Swift tools. A packaged install is marked by `.echo-package`, so its projects default to `~/Echo Projects`.
+- **Install:** double-click `install.command` (`scripts/install.sh`). It installs Node.js if needed (the official LTS tarball from nodejs.org, SHA-256 checked, into `~/.echo/node`, so no git or Xcode tools are needed; `scripts/install-node.sh`) and the packages, installs Claude Code and walks through the Claude sign-in (each person needs their own Claude subscription), optionally sets up Whisper and the Kokoro voice, and builds the native `~/Applications/Echo.app` (`macos/`, `scripts/build-app.sh`; `npm run build-app` for your own copy), falling back to a browser launcher (`scripts/launcher.sh`) without Apple's Swift tools. A packaged install is marked by `.echo-package`, so its projects default to `~/Echo Projects`.
 - **First-run setup:** a fresh install (no `data/settings.json`) opens a wizard. It asks for:
   - your name
   - what you want help with
@@ -182,7 +182,7 @@ Echo can be given to someone who isn't a developer. **[GETTING_STARTED.md](GETTI
 | `lib/text.js` | Local time, and turning worker output into speakable summaries |
 | `lib/voice.js`, `lib/settings.js` | Text-to-speech engines; voice and personality settings |
 | `public/` | The voice UI: warm graphite with a sunset accent (theme tokens at the top of `style.css`), the liquid-light voice visual (`voiceviz.js`) and the ambient piano (`piano.js`) |
-| `public/icons/` | Echo logo sources (`echo-mark.svg`, `echo-app-icon.svg`, `favicon*.svg`) and generated PNGs |
+| `public/icons/` | Echo logo sources (`echo-mark.svg`, `favicon*.svg`), the app icon PNGs and `echo-app-icon.svg` (a vector version of the icon). The app icon itself is drawn by `scripts/render-icon.swift` |
 | `test/` | `npm test` (unit tests plus an end-to-end rollback test) |
 | `data/` | Tasks, memory, `projects.json`, `conversations/` (daily transcripts), `self/` (audit log, PIN hash) |
 | `logs/task-N.log` | Live log per task (what the Terminal button tails) |
@@ -198,7 +198,7 @@ npm run package   # shareable dist/Echo.zip, only if the privacy check passes
 npm run privacy-check  # re-run the check on dist/Echo (or a folder you name)
 npm run release [patch|minor|major]  # a versioned release in dist/release/ (see HANDOFF.md)
 npm run release:simulate  # rehearse release → one-line install → update → rollback, locally
-npm run icons     # re-render the PNG icons from the SVGs (needs rsvg-convert: brew install librsvg)
+npm run icons     # re-render the app icon (macos/Echo.icns and PNGs) with scripts/render-icon.swift; favicons need rsvg-convert
 ```
 
 ## Config (env vars)

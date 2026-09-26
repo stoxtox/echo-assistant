@@ -145,6 +145,8 @@ SRC="$(cd "$(dirname "$0")/.." && pwd -P)"
 export npm_config_update_notifier=false
 export PATH="$HOME/.local/bin:$PATH"
 
+ECHO_NODE_DIR="${ECHO_NODE_DIR:-$HOME/.echo/node}"
+
 load_nvm() {
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   [ -s "$NVM_DIR/nvm.sh" ] || return 1
@@ -159,11 +161,17 @@ load_nvm() {
 node_major() { node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
 node_ok() { command -v node >/dev/null 2>&1 && [ "$(node_major)" -ge 20 ] 2>/dev/null; }
 
+# Echo's own Node.js (~/.echo/node, from scripts/install-node.sh) first, then whatever else is there.
 find_node() {
+  if [ -x "$ECHO_NODE_DIR/bin/node" ]; then
+    export PATH="$ECHO_NODE_DIR/bin:$PATH"
+    node_ok && return 0
+  fi
   node_ok && return 0
   load_nvm && node_ok && return 0
   local d
-  for d in /opt/homebrew/bin /usr/local/bin; do
+  # ECHO_NODE_SEARCH lets tests hide this Mac's Homebrew Node.js.
+  for d in ${ECHO_NODE_SEARCH-/opt/homebrew/bin /usr/local/bin}; do
     if [ -x "$d/node" ]; then
       export PATH="$d:$PATH"
       node_ok && return 0
@@ -171,6 +179,12 @@ find_node() {
   done
   return 1
 }
+
+# Apple's Command Line Tools (for building the Mac app with swiftc). `xcode-select -p` alone
+# can point at a removed folder, so build-app.sh --check also looks for swiftc and the SDK.
+clt_ready() { /usr/bin/xcode-select -p >/dev/null 2>&1 && /bin/bash scripts/build-app.sh --check >/dev/null 2>&1; }
+# Apple's "Install Command Line Developer Tools" window is open (or installing).
+clt_installer_open() { /usr/bin/pgrep -f 'Install Command Line Developer Tools' >/dev/null 2>&1; }
 
 find_brew() {
   command -v brew >/dev/null 2>&1 && return 0
@@ -212,7 +226,8 @@ fi
 say ""
 say "${BOLD}Here's what will happen${RESET} (takes about 5 minutes, and it's safe to run again later):"
 say "  1. Copy Echo into ${BOLD}$DEST${RESET}"
-say "  2. Make sure Node.js is installed (the engine Echo runs on)"
+say "  2. Check for Apple's Command Line Tools (for the Mac app) and make sure Node.js is"
+say "     installed (the engine Echo runs on; no developer tools needed for it)"
 say "  3. Download the building blocks Echo needs"
 say "  4. Set up Claude Code (Echo's brain) and sign you in"
 say "  5. Offer a couple of optional extras (better speech recognition, a pre-downloaded voice)"
@@ -269,6 +284,74 @@ fi
 PORT="${VOICEOPS_PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port || true)}"
 PORT="${PORT:-4777}"
 
+# ---------------------------------------------------------------- 1b. Apple's Command Line Tools
+
+# Checked early, so Apple's installer can run while the other steps carry on. Only the native Mac
+# app needs them (it's compiled here with swiftc); Node.js and everything else don't.
+CLT_STATE=none   # ready | started (Apple's installer was opened) | declined | none
+if [ "$NO_APP" = 1 ] || [ "$BROWSER_APP" = 1 ]; then
+  CLT_STATE=declined
+else
+  step "checking Apple's Command Line Tools"
+  if clt_ready; then
+    CLT_STATE=ready
+    ok "Apple's Command Line Tools are installed ($(/usr/bin/xcode-select -p 2>/dev/null))."
+  else
+    say "Echo's Mac app (its own window, a menu bar icon and the Option-Space shortcut) is built"
+    say "right here on your Mac with Apple's free ${BOLD}Command Line Tools${RESET}, which aren't installed yet."
+    say "Apple installs them for you: about 5 to 10 minutes, no Apple ID needed. Without them,"
+    say "Echo opens in your web browser instead, which works just as well."
+    if [ "$INTERACTIVE" = 0 ] && [ "$ASSUME_YES" = 0 ]; then
+      info "No one here to click Apple's installer, so Echo will open in the browser. Run the installer again later for the Mac app."
+      CLT_STATE=declined
+    elif ask "Install Apple's Command Line Tools now?" Y ask; then
+      /usr/bin/xcode-select --install >/dev/null 2>&1 || true
+      CLT_STATE=started
+      say "A window from Apple should appear: click ${BOLD}Install${RESET}, then ${BOLD}Agree${RESET}."
+      say "You don't need to wait for it: the installer carries on with the other steps now, and"
+      say "checks back before it builds the Echo app."
+    else
+      CLT_STATE=declined
+      info "No problem: Echo will open in your browser. Run the installer again any time for the Mac app."
+    fi
+  fi
+fi
+
+# Waits for Apple's installer (started above) to finish. Gives up after ECHO_CLT_WAIT seconds
+# (30 minutes), when Apple's window is closed without installing, or when someone presses Return.
+wait_for_clt() {
+  local limit="${ECHO_CLT_WAIT:-1800}" waited=0 gone=0
+  clt_ready && return 0
+  say "Waiting for Apple's Command Line Tools to finish installing (up to $((limit / 60)) minutes)."
+  if [ "$INTERACTIVE" = 1 ]; then
+    say "If you'd rather not wait, press Return and Echo will open in your browser instead."
+  fi
+  while [ "$waited" -lt "$limit" ]; do
+    if [ "$INTERACTIVE" = 1 ]; then
+      if IFS= read -r -t 5 _; then info "Not waiting. Echo will open in your browser for now."; return 1; fi
+    else
+      sleep 5
+    fi
+    waited=$((waited + 5))
+    clt_ready && { ok "Command Line Tools installed."; return 0; }
+    # Apple's window closed without installing (the person clicked "Not Now" or "Cancel").
+    if [ "$waited" -ge 20 ] && ! clt_installer_open; then
+      gone=$((gone + 1))
+      if [ "$gone" -ge 3 ]; then
+        clt_ready && { ok "Command Line Tools installed."; return 0; }
+        warn "Apple's installer was closed before it finished, so Echo will open in your browser for now."
+        return 1
+      fi
+    else
+      gone=0
+    fi
+    [ $((waited % 60)) = 0 ] && info "  Still installing… ($((waited / 60)) min so far; it usually takes 5 to 10)"
+  done
+  warn "The Command Line Tools aren't ready after $((limit / 60)) minutes, so Echo will open in your browser for now."
+  say "   When Apple's installer finishes, run this installer again to get the Mac app."
+  return 1
+}
+
 # ---------------------------------------------------------------- 2. node
 
 step "checking for Node.js"
@@ -286,25 +369,16 @@ else
     say "   Install it from https://nodejs.org (the LTS button), then run the installer again."
     exit 1
   fi
-  say "The installer can set it up for you with nvm, the standard Node.js version manager."
-  say "It installs into your home folder only (no password needed) and takes a minute or two."
+  say "The installer can download the official Node.js from nodejs.org, check that the download"
+  say "is genuine, and keep it in Echo's own folder in your home (${ECHO_NODE_DIR/#$HOME/~})."
+  say "No password needed, nothing else on your Mac changes, and it takes about a minute."
   if ask "Install Node.js now?" Y; then
     STEP_NAME="installing Node.js"
-    export NVM_DIR="$HOME/.nvm"
-    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-      say "Downloading nvm…"
-      # The nvm installer adds itself to ~/.zshrc so Terminal finds Node later; make sure it exists.
-      touch "$HOME/.zshrc"
-      # METHOD=script avoids needing git (which would pop up an Xcode tools install on a fresh Mac).
-      curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | PROFILE="$HOME/.zshrc" METHOD=script bash
-    fi
-    load_nvm || { bad "nvm didn't install correctly."; exit 1; }
-    say "Installing the latest long-term-support Node.js…"
     set +eE
-    nvm install --lts && nvm alias default 'lts/*' >/dev/null && nvm use default >/dev/null
+    ECHO_NODE_DIR="$ECHO_NODE_DIR" /bin/bash scripts/install-node.sh
     rc=$?
     set -eE
-    [ "$rc" = 0 ] || { bad "Installing Node.js with nvm failed."; exit 1; }
+    [ "$rc" = 0 ] || { bad "Installing Node.js didn't work (see the message just above)."; say "   Check your internet connection and run the installer again."; exit 1; }
     STEP_NAME="checking for Node.js"
     find_node || { bad "Node.js was installed but can't be found. Please close this window and run the installer again."; exit 1; }
     ok "Node.js $(node -v) is installed."
@@ -347,21 +421,15 @@ else
   if find_claude; then
     ok "Claude Code is installed ($(command -v claude))."
   else
-    say "Claude Code isn't installed yet. The installer can get it from Anthropic's official"
-    say "installer (claude.ai/install.sh). It goes into your home folder; no password needed."
-    if ask "Install Claude Code now?" Y; then
-      STEP_NAME="installing Claude Code"
-      if curl -fsSL https://claude.ai/install.sh | bash; then
-        :
-      else
-        warn "The official installer didn't work; trying the npm package instead."
-        npm install -g @anthropic-ai/claude-code
-      fi
-      find_claude || { bad "Claude Code was installed but can't be found. Please close this window and run the installer again."; exit 1; }
-      ok "Claude Code is installed."
-    else
-      warn "Skipping Claude Code. Echo can't think without it; run the installer again when you're ready."
+    say "Installing Claude Code with Anthropic's official installer (claude.ai/install.sh)."
+    say "It goes into your home folder; no password needed. (Use --skip-claude to leave it out.)"
+    STEP_NAME="installing Claude Code"
+    if ! curl -fsSL https://claude.ai/install.sh | bash; then
+      warn "The official installer didn't work; trying the npm package instead."
+      npm install -g @anthropic-ai/claude-code
     fi
+    find_claude || { bad "Claude Code was installed but can't be found. Please close this window and run the installer again."; exit 1; }
+    ok "Claude Code is installed."
   fi
 
   if find_claude || [ -n "$ANTHROPIC_API_KEY" ]; then
@@ -369,8 +437,8 @@ else
     if claude_signed_in; then
       ok "You're signed in to Claude."
     elif [ "$INTERACTIVE" = 0 ]; then
-      warn "You're not signed in to Claude yet, and there's no one here to do it."
-      say "   To sign in later: open Terminal, type ${BOLD}claude auth login${RESET} and press Return."
+      info "You're not signed in to Claude yet. That's fine: Echo's setup has a \"Sign in to Claude\""
+      info "step the first time you open it (or type ${BOLD}claude auth login${RESET} in Terminal)."
     else
       say ""
       say "${BOLD}Now let's sign you in to Claude.${RESET}"
@@ -392,6 +460,7 @@ else
         warn "It doesn't look like the sign-in finished. You can finish it any time:"
         say "   open Terminal, type ${BOLD}claude${RESET}, press Return, then type ${BOLD}/login${RESET}."
         say "   When you're done, type ${BOLD}/exit${RESET} to leave. Echo works as soon as you're signed in."
+        say "   (Echo's setup also has a \"Sign in to Claude\" step that can do this for you.)"
       fi
     fi
   fi
@@ -446,7 +515,7 @@ fi
 
 APP="$HOME/Applications/Echo.app"
 NATIVE=0
-build_tools() { /bin/bash scripts/build-app.sh --check >/dev/null 2>&1; }
+build_tools() { clt_ready; }
 if [ "$NO_APP" = 1 ]; then
   step "the Echo app (skipped)"
   info "Skipped because of --no-app. Start Echo by double-clicking start.command in $DEST."
@@ -456,22 +525,10 @@ else
   say "window, a menu bar icon and a shortcut (Option-Space) to bring it up. Opening it starts Echo"
   say "in the background."
   mkdir -p "$HOME/Applications"
-  if [ "$BROWSER_APP" = 0 ] && ! build_tools; then
-    say ""
-    say "The Mac app is built right here on your Mac with Apple's free ${BOLD}Command Line Tools${RESET},"
-    say "which aren't installed yet (about 5 to 10 minutes to install). Without them, Echo opens in"
-    say "your browser instead, which works just as well."
-    if [ "$INTERACTIVE" = 0 ] && [ "$ASSUME_YES" = 0 ]; then
-      info "No one here to click Apple's installer, so the browser version it is. Run the installer again later for the Mac app."
-    elif ask "Install Apple's Command Line Tools now?" Y ask; then
-      STEP_NAME="installing Apple's Command Line Tools"
-      /usr/bin/xcode-select --install >/dev/null 2>&1 || true
-      say "A window from Apple should appear: click ${BOLD}Install${RESET}, then ${BOLD}Agree${RESET}, and wait for it to finish."
-      say "This window carries on by itself when it's done (it waits up to 30 minutes)."
-      for _ in $(seq 1 360); do build_tools && break; sleep 5; done
-      if build_tools; then ok "Command Line Tools installed."; else warn "The Command Line Tools aren't ready yet, so Echo will open in the browser for now."; fi
-      STEP_NAME="creating the Echo app"
-    fi
+  if [ "$BROWSER_APP" = 0 ] && [ "$CLT_STATE" = started ]; then
+    STEP_NAME="waiting for Apple's Command Line Tools"
+    wait_for_clt || BROWSER_APP=1
+    STEP_NAME="creating the Echo app"
   fi
   if [ "$BROWSER_APP" = 0 ] && build_tools; then
     say "Building the Echo app for this Mac (about a minute)…"

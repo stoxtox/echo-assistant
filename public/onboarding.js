@@ -4,12 +4,13 @@
 //   const wizard = createWizard({ applySettings, speak, setHandsFree, handsFree, useExample, onFinish, hush });
 //   wizard.open('welcome', { canClose: false });   // or any id in STEPS
 //   wizard.open('files', { single: true });         // just one step, then close (Settings > Change…)
+//   wizard.open('claude', { single: true });        // just the Claude sign-in
 //
 // Each step saves as it goes (POST /api/onboarding); the last one sends finish: true. The pure
 // helpers at the top (examples, suggestions, paths, PIN checks) have no DOM and are tested in
 // test/onboarding-ui.test.js.
 
-export const STEPS = /** @type {const} */ (['welcome', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
+export const STEPS = /** @type {const} */ (['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
 
 /** Short, friendly descriptions for the interest cards (titles come from the server). */
 export const INTEREST_INFO = {
@@ -100,6 +101,35 @@ export function splitVoiceName(label) {
   return m ? { name: m[1], note: m[2] } : { name: String(label || ''), note: '' };
 }
 
+/** Where to get a Claude plan or an API key (the wizard's "Sign in to Claude" step). */
+export const CLAUDE_LINKS = {
+  plans: 'https://claude.ai/upgrade',
+  console: 'https://console.anthropic.com/settings/billing',
+  help: 'https://support.anthropic.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan',
+};
+
+/**
+ * What the sign-in card says, from GET /api/claude/status and the test result.
+ * @param {any} st  the status (null while checking)
+ * @param {{ running?: boolean, ok?: boolean, error?: string } | null} test
+ * @returns {{ tone: 'busy' | 'ok' | 'bad' | 'idle', title: string, detail: string }}
+ */
+export function signInSummary(st, test = null) {
+  if (!st) return { tone: 'busy', title: 'Checking your Claude sign-in…', detail: '' };
+  if (!st.installed && !st.signedIn) return { tone: 'bad', title: "Claude Code isn't installed yet", detail: "Run Echo's installer again (it installs Claude Code for you), then come back to this step." };
+  if (st.signedIn) {
+    const plan = st.plan ? ` (${st.plan})` : '';
+    if (test?.running) return { tone: 'busy', title: `Signed in${plan}. Testing it…`, detail: 'Sending Claude a tiny test message.' };
+    if (test?.ok) return { tone: 'ok', title: `You're signed in${plan}`, detail: 'Test message answered. Everything works.' };
+    if (test?.error) return { tone: 'bad', title: `Signed in${plan}, but the test didn't work`, detail: test.error };
+    return { tone: 'ok', title: `You're signed in${plan}`, detail: '' };
+  }
+  if (st.login?.running) return { tone: 'busy', title: 'Waiting for you to finish in the browser…', detail: 'Sign in on the page that opened and click Authorize. This screen updates by itself.' };
+  if (st.login?.error) return { tone: 'bad', title: "You're not signed in yet", detail: st.login.error };
+  if (st.error) return { tone: 'bad', title: "You're not signed in yet", detail: st.error };
+  return { tone: 'idle', title: "You're not signed in yet", detail: 'Click the button below. A browser window opens where you sign in with your Claude account.' };
+}
+
 /** Accents, in plain words. */
 export const ACCENTS = [
   ['en-IN', 'Indian English'],
@@ -126,6 +156,7 @@ const ICONS = {
   workers: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8M8 12.5h8M8 16h5"/>',
   quote: '<path d="M10 7H6.5A1.5 1.5 0 0 0 5 8.5V12h4v5H5M19 7h-3.5A1.5 1.5 0 0 0 14 8.5V12h4v5h-4"/>',
   keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 6.5l2.5 2.5M14 8.5l2 2"/>',
   sparkle: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.9L12 18.5l-1.8-5.8L4.5 10.8 10.2 9 12 3.5Z"/>',
 };
 const svg = (name, size = 22) =>
@@ -382,6 +413,101 @@ export function createWizard(deps) {
           h('div', { class: 'wiz-note' }, icon('sparkle', 'wiz-note-ic', 18),
             h('span', {}, 'I run on your own Claude subscription, so I work through the account you already have.')),
           h('p', { class: 'wiz-soft' }, "Let's get you set up. It takes about two minutes."),
+        ],
+      };
+    },
+
+    claude() {
+      let st = null;
+      let test = /** @type {{ running?: boolean, ok?: boolean, error?: string } | null} */ (null);
+      /** @type {any} */
+      let timer = 0;
+      let alive = true;
+      cleanups.push(() => { alive = false; clearTimeout(timer); });
+      const card = h('div', { class: 'wiz-signin', role: 'status', 'aria-live': 'polite' });
+      const cardIc = h('span', { class: 'wiz-signin-ic', 'aria-hidden': 'true' });
+      const cardTitle = h('strong', {});
+      const cardDetail = h('span', {});
+      const link = h('a', { class: 'wiz-link', target: '_blank', rel: 'noopener', hidden: true }, "The browser didn't open? Click here to sign in.");
+      card.append(cardIc, h('div', { class: 'wiz-signin-text' }, cardTitle, cardDetail, link));
+      const signIn = h('button', { type: 'button', class: 'wiz-signin-btn' }, 'Sign in with my Claude plan');
+      const apiBtn = h('button', { type: 'button', class: 'wiz-link' }, 'Use a pay-as-you-go API key instead');
+      const retry = h('button', { type: 'button', class: 'ghost small', hidden: true }, 'Try again');
+      const sync = () => {
+        if (!alive) return;
+        const sum = signInSummary(st, test);
+        card.className = `wiz-signin ${sum.tone}`;
+        cardIc.innerHTML = sum.tone === 'busy' ? '<span class="wiz-spin"></span>' : sum.tone === 'ok' ? CHECK : svg('key', 18);
+        cardTitle.textContent = sum.title;
+        cardDetail.textContent = sum.detail;
+        cardDetail.hidden = !sum.detail;
+        const url = st?.login?.running ? st.login.url : '';
+        link.hidden = !url;
+        if (url) link.setAttribute('href', url);
+        const signedIn = Boolean(st?.signedIn);
+        signIn.hidden = apiBtn.hidden = signedIn || !st || st.installed === false;
+        signIn.disabled = Boolean(st?.login?.running);
+        signIn.textContent = st?.login?.running ? 'Waiting for the browser…' : st?.login?.error ? 'Sign in again' : 'Sign in with my Claude plan';
+        retry.hidden = !(signedIn && test?.error) && !(st && !st.installed && !st.signedIn);
+        if (idx === STEPS.indexOf('claude') && !single) els.next.textContent = signedIn && test?.ok ? 'Continue' : 'Skip for now';
+      };
+      const runTest = async () => {
+        test = { running: true };
+        sync();
+        try {
+          const out = await fetch('/api/claude/test', { method: 'POST' }).then((r) => r.json());
+          test = out.ok ? { ok: true } : { error: out.error || "Claude didn't answer." };
+        } catch {
+          test = { error: "I couldn't run the test. Is Echo still running?" };
+        }
+        sync();
+      };
+      const poll = async () => {
+        clearTimeout(timer);
+        try {
+          st = await fetch('/api/claude/status').then((r) => r.json());
+        } catch {
+          st = { installed: true, signedIn: false, error: "I couldn't check the sign-in. Is Echo still running?" };
+        }
+        if (!alive) return;
+        if (st.signedIn && !test) runTest();
+        sync();
+        // Keep checking while the browser sign-in is open (and a little after it closes).
+        if (!st.signedIn && (st.login?.running || Date.now() - startedAt < 90000)) timer = setTimeout(poll, 2000);
+      };
+      let startedAt = 0;
+      const login = async (method) => {
+        test = null;
+        startedAt = Date.now();
+        try {
+          const res = await fetch('/api/claude/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method }) });
+          const out = await res.json();
+          if (!res.ok) throw new Error(out.error);
+          st = { ...(st || {}), login: out.login };
+        } catch (e) {
+          st = { ...(st || { installed: true }), signedIn: false, login: { running: false, error: e.message || "Couldn't start the sign-in." } };
+        }
+        sync();
+        poll();
+      };
+      signIn.onclick = () => login('subscription');
+      apiBtn.onclick = () => login('api');
+      retry.onclick = () => { test = null; poll(); };
+      poll();
+      const plan = (title, text, href, linkText) =>
+        h('div', { class: 'wiz-plan' }, h('strong', {}, title), h('span', {}, text), h('a', { href, target: '_blank', rel: 'noopener', class: 'wiz-link' }, linkText));
+      return {
+        next: 'Skip for now',
+        nodes: [
+          ...heading('Sign in to Claude', stepLabel()),
+          lead(`${aName()} thinks with Claude, so it needs a Claude account of your own. You only do this once.`),
+          card,
+          h('div', { class: 'wiz-signin-actions' }, signIn, apiBtn, retry),
+          h('div', { class: 'wiz-q' }, 'Which kind of account?'),
+          h('div', { class: 'wiz-plans' },
+            plan('A Claude Pro or Max plan (recommended)', 'A monthly subscription from claude.ai with a set price. Pro suits everyday use; Max gives you much more. No surprise bills.', CLAUDE_LINKS.plans, 'See the plans'),
+            plan('A pay-as-you-go API key', 'No subscription: you add credit in the Anthropic Console and pay only for what you use. Good if you use me now and then.', CLAUDE_LINKS.console, 'Open the Anthropic Console')),
+          h('p', { class: 'wiz-hint' }, 'Already use Claude? Sign in with the same account. Nothing is charged by setting this up.'),
         ],
       };
     },

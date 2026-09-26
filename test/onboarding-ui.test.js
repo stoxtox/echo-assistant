@@ -6,8 +6,8 @@ import {
   STEPS, EXAMPLES, DEFAULT_SUGGESTIONS, tourExamples, suggestionsFor, friendlyPath, folderName, pinProblem, splitVoiceName, ACCENTS,
 } from '../public/onboarding.js';
 
-test('the wizard has the nine steps, in order', () => {
-  assert.deepEqual([...STEPS], ['welcome', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
+test('the wizard has the ten steps, in order', () => {
+  assert.deepEqual([...STEPS], ['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
 });
 
 test('tour examples come from the chosen interests, topped up to at least four', () => {

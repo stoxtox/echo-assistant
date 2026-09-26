@@ -80,8 +80,23 @@ VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$ROOT/package.json" | h
 sed "s/__VERSION__/${VERSION:-1.0.0}/g" "$ROOT/macos/Info.plist" > "$BUILD/Contents/Info.plist"
 printf 'APPL????' > "$BUILD/Contents/PkgInfo"
 
-# The icon: the prebuilt one (npm run icons makes it from the SVG), else made here from the PNG.
-if [ -f "$ROOT/macos/Echo.icns" ]; then
+# The icon: rendered fresh from scripts/render-icon.swift (same Swift tools as the app, plus
+# iconutil), else the committed macos/Echo.icns (npm run icons makes it), else made from the PNG.
+icon_built=0
+if [ -f "$ROOT/scripts/render-icon.swift" ] && [ -x /usr/bin/iconutil ] && [ "${ECHO_SKIP_ICON_RENDER:-}" != 1 ]; then
+  echo "Rendering the app icon…"
+  if /usr/bin/xcrun --sdk macosx swiftc -O "$ROOT/scripts/render-icon.swift" -o "$WORK/render-icon" 2>/dev/null &&
+     "$WORK/render-icon" --iconset "$WORK/Echo.iconset" &&
+     /usr/bin/iconutil -c icns "$WORK/Echo.iconset" -o "$BUILD/Contents/Resources/Echo.icns"; then
+    icon_built=1
+  else
+    echo "Couldn't render the icon; using the prebuilt one." >&2
+  fi
+  rm -rf "$WORK/Echo.iconset" "$WORK/render-icon"
+fi
+if [ "$icon_built" = 1 ]; then
+  :
+elif [ -f "$ROOT/macos/Echo.icns" ]; then
   cp "$ROOT/macos/Echo.icns" "$BUILD/Contents/Resources/Echo.icns"
 elif [ -f "$ROOT/public/icons/echo-512.png" ]; then
   set_dir="$WORK/Echo.iconset"

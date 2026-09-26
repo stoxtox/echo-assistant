@@ -1,21 +1,31 @@
 #!/bin/zsh
-# Rasterize the Echo SVG icons into PNGs. Needs rsvg-convert (brew install librsvg).
+# Makes Echo's icons (npm run icons).
+#
+#   scripts/build-icons.sh [--preview FILE]
+#
+# The app icon (macos/Echo.icns, public/icons/echo-512.png, echo-192.png, apple-touch-icon.png) is
+# rendered by scripts/render-icon.swift: the sunset drop from public/voiceviz.js on the macOS icon
+# grid. It needs only Apple's Command Line Tools (swiftc, iconutil), and the output is reproducible.
+# --preview also writes a contact sheet of every size (keep it outside the repo, e.g. /tmp).
+# The favicons come from their SVGs and need rsvg-convert (brew install librsvg); they're skipped
+# with a note if it's missing.
 set -e
-cd "${0:A:h}/../public/icons"
-command -v rsvg-convert >/dev/null || { echo "rsvg-convert not found: brew install librsvg"; exit 1; }
-rsvg-convert -w 16 -h 16 favicon-16.svg -o favicon-16.png
-for s in 32 48; do rsvg-convert -w $s -h $s favicon.svg -o favicon-$s.png; done
-rsvg-convert -w 180 -h 180 echo-app-icon.svg -o apple-touch-icon.png
-for s in 192 512; do rsvg-convert -w $s -h $s echo-app-icon.svg -o echo-$s.png; done
-echo "Icons written to public/icons"
+ROOT="${0:A:h:h}"
+preview=()
+[[ "$1" == --preview && -n "$2" ]] && preview=(--preview "$2")
 
-# The Mac app's icon (macos/Echo.icns), every size straight from the SVG.
-set_dir="$(mktemp -d)/Echo.iconset"
-mkdir -p "$set_dir"
-for s in 16 32 128 256 512; do
-  rsvg-convert -w $s -h $s echo-app-icon.svg -o "$set_dir/icon_${s}x${s}.png"
-  rsvg-convert -w $((s * 2)) -h $((s * 2)) echo-app-icon.svg -o "$set_dir/icon_${s}x${s}@2x.png"
-done
-iconutil -c icns "$set_dir" -o ../../macos/Echo.icns
-rm -rf "${set_dir:h}"
-echo "Mac app icon written to macos/Echo.icns"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+/usr/bin/xcrun --sdk macosx swiftc -O "$ROOT/scripts/render-icon.swift" -o "$work/render-icon"
+"$work/render-icon" --iconset "$work/Echo.iconset" --web "$ROOT/public/icons" $preview
+/usr/bin/iconutil -c icns "$work/Echo.iconset" -o "$ROOT/macos/Echo.icns"
+echo "App icon written to macos/Echo.icns and public/icons (echo-512, echo-192, apple-touch-icon)"
+
+cd "$ROOT/public/icons"
+if command -v rsvg-convert >/dev/null; then
+  rsvg-convert -w 16 -h 16 favicon-16.svg -o favicon-16.png
+  for s in 32 48; do rsvg-convert -w $s -h $s favicon.svg -o favicon-$s.png; done
+  echo "Favicons written to public/icons"
+else
+  echo "rsvg-convert not found (brew install librsvg): favicons left as they are"
+fi

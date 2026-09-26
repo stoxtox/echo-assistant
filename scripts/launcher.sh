@@ -83,7 +83,8 @@ open_browser() {
 
 if healthy; then open_browser; exit 0; fi
 
-# Find Node.js 20 or newer: the one the installer used, then nvm, then Homebrew.
+# Find Node.js 20 or newer: the one the installer used, then Echo's own (~/.echo/node), then nvm,
+# then Homebrew.
 node_ok() {
   local major
   major="$("${1:-node}" -p 'process.versions.node.split(".")[0]' 2>/dev/null)" || return 1
@@ -94,6 +95,9 @@ saved="$(cat "$APP_DIR/.echo-node" 2>/dev/null)"
 if [ -n "$saved" ] && [ -x "$saved" ] && node_ok "$saved"; then
   NODE="$saved"
   export PATH="$(dirname "$saved"):$PATH"
+elif node_ok "${ECHO_NODE_DIR:-$HOME/.echo/node}/bin/node"; then
+  NODE="${ECHO_NODE_DIR:-$HOME/.echo/node}/bin/node"
+  export PATH="$(dirname "$NODE"):$PATH"
 else
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   # shellcheck disable=SC1091
