@@ -16,7 +16,9 @@ import { SelfImprove, audit } from './lib/selfimprove.js';
 import { QuickActions } from './lib/quick.js';
 import { nowString, friendlyError } from './lib/text.js';
 import { addCost, costSummary, backfillWorkerCosts } from './lib/costs.js';
-import { transcribe, engines, resolveEngine, startWhisper, sttLanguageFor } from './lib/stt.js';
+import { transcribe, engines, resolveEngine, startWhisper, sttLanguageFor, wakeTranscribe } from './lib/stt.js';
+import { matchWake, stripWake } from './lib/wake.js';
+import { isBlankText, checkHeard, saveBlankClip, wavStats, addressesEcho, echoesReply } from './lib/heard.js';
 import { Corrector } from './lib/correct.js';
 import { loadVocab, setWords, vocabularyTerms } from './lib/vocab.js';
 import { Updater } from './lib/updater.js';
@@ -47,6 +49,7 @@ corrector.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assista
 const convoDir = path.join(config.dataDir, 'conversations');
 fs.mkdirSync(convoDir, { recursive: true });
 const recent = []; // last few lines, as context for fixing mishearings
+const wakeCounts = { checks: 0, wakes: 0 }; // "Hey Echo" checks since start (never what was said)
 function logConvo(who, textIn) {
   if (who === 'User' || who === 'Assistant') {
     recent.push(`${who}: ${String(textIn).slice(0, 300)}`);
@@ -111,8 +114,8 @@ async function api(req, res, url) {
       return sendJson(res, { ok: !restarting && Boolean(dispatcher.input), tasks: tasks.list().length, pid: process.pid });
     case 'POST /api/tts': {
       const s = getSettings();
-      const { text, provider = s.ttsProvider, voice = s.voice, speed = s.speed } = await readJson(req);
-      const audio = await synthesize({ text, provider, voice, speed });
+      const { text, provider = s.ttsProvider, voice = s.voice, speed = s.speed, previousText } = await readJson(req);
+      const audio = await synthesize({ text, provider, voice, speed, previousText });
       const words = wordsHeader(audio.words);
       return res.writeHead(200, { 'Content-Type': audio.mime, 'Cache-Control': 'no-store', ...(words && { 'X-Echo-Words': words }) }).end(audio.data);
     }
@@ -176,16 +179,65 @@ async function api(req, res, url) {
       const s = getSettings();
       const engine = resolveEngine(s.sttEngine);
       if (engine === 'browser') return sendJson(res, { error: 'Browser recognition runs in the page' }, 400);
-      const heard = await transcribe(await readBody(req), { engine, language: s.sttLanguage });
-      if (!heard.text) return sendJson(res, { empty: true, engine, ms: heard.ms });
-      const out = await handleUtterance(heard.text, { uncertain: heard.uncertain, engine, sttMs: heard.ms });
-      return sendJson(res, out);
+      const wav = await readBody(req);
+      const heard = await transcribe(wav, { engine, language: s.sttLanguage });
+      // What the live listener showed, and the page's notes on the mic (public/app.js sendClip).
+      const live = headerJson(req, 'x-echo-live') ?? '';
+      const page = headerJson(req, 'x-echo-clip') || {};
+      const { pick, cleaned, entry: blank } = checkHeard({ wav, heard, live, livePreview: s.livePreview, page, clipDir: path.join(config.dataDir, 'stt-blank-clips') });
+      if (blank) {
+        // Kept for finding the cause: the clip, its loudness, and the page's notes on the mic.
+        fs.appendFileSync(sttLog, JSON.stringify(blank) + '\n');
+        console.log(`[stt] ${blank.event}: final ${JSON.stringify(heard.text)}, used ${pick.source}; ${blank.cause} (${blank.stats.seconds}s, peak ${blank.stats.peak})`);
+      }
+      if (pick.source === 'none') return sendJson(res, { empty: true, engine, ms: heard.ms, reason: cleaned.reason || 'blank' });
+      // A wake-word turn: "Hey Echo" comes off the front, the request stays. Just "Hey Echo" and
+      // nothing after it isn't a turn.
+      const said = page.mode === 'wake' ? stripWake(pick.text) : pick.text;
+      if (isBlankText(said)) return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'wake_only' });
+      const lastReply = recent.findLast((l) => l.startsWith('Assistant: '))?.slice(11) || '';
+      if (echoesReply(said, lastReply)) {
+        fs.appendFileSync(sttLog, JSON.stringify({ at: new Date().toISOString(), event: 'own_voice', engine, text: said, live }) + '\n');
+        return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'own_voice' });
+      }
+      // Hands-free with the wake word on: only speech that says "Echo", or a follow-up right after
+      // her reply, becomes a turn. Talk around the mic (a call, the TV) is left alone.
+      if (page.mode === 'hands-free' && s.wakeWord && !page.followUp && !addressesEcho(said)) {
+        // Only that it happened: talk that wasn't for Echo is never written down.
+        fs.appendFileSync(sttLog, JSON.stringify({ at: new Date().toISOString(), event: 'not_for_echo', engine }) + '\n');
+        return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'not_for_echo' });
+      }
+      // The newest clips are kept with their loudness and the mic's settings (echo cancellation
+      // on?), so a misheard sentence can be played back and checked later.
+      let clip = null;
+      try {
+        clip = path.basename(saveBlankClip(path.join(config.dataDir, 'stt-clips'), wav, RECENT_CLIPS));
+      } catch {}
+      const audio = { ...wavStats(wav), clip, aec: page.aec, echoTailMs: page.echoTailMs, mode: page.mode, speechMs: heard.speechMs, keptSeconds: heard.keptSeconds };
+      // Every stage, so a misheard turn can be traced: the live listener, Whisper as it came back
+      // (with each segment's confidence), what the clean-up dropped, and which one was used.
+      const stages = { live: typeof live === 'string' ? live : '', whisper: heard.text, segments: heard.segments, dropped: cleaned.dropped, source: pick.source, reason: pick.reason || cleaned.reason };
+      // Live text has no word confidences, so nothing is flagged as uncertain.
+      const out = await handleUtterance(said, { uncertain: pick.source === 'final' ? heard.uncertain : [], engine: pick.source === 'live' ? `${engine}+live` : engine, sttMs: heard.ms, audio, stages });
+      return sendJson(res, { ...out, source: pick.source });
+    }
+    case 'POST /api/wake': {
+      // A wake-word check from the page (public/wake.js): the first ~1.8 s of a burst of speech.
+      // Local Whisper only; the audio and the words are never logged or saved.
+      const s = getSettings();
+      if (!s.wakeWord || !engines().whisper.available) return sendJson(res, { wake: false, off: true });
+      const heard = await wakeTranscribe(await readBody(req, 512 * 1024));
+      const m = matchWake(heard.text, { sensitivity: s.wakeSensitivity, lp: heard.lp });
+      wakeCounts.checks++;
+      if (m.wake) wakeCounts.wakes++;
+      return sendJson(res, { wake: m.wake, rest: m.wake ? m.rest : '', ms: heard.ms });
     }
     case 'GET /api/stt': {
       const s = getSettings();
       const active = resolveEngine(s.sttEngine);
       // browserLang: what the page sets recognition.lang to (always English).
-      return sendJson(res, { engines: engines(), active, choice: s.sttEngine, language: s.sttLanguage, browserLang: sttLanguageFor('browser', s.sttLanguage), engineLang: sttLanguageFor(active, s.sttLanguage) });
+      // wake: the "Hey Echo" listener needs local Whisper; counts since Echo started, never the words.
+      return sendJson(res, { wake: { available: engines().whisper.available, on: s.wakeWord, ...wakeCounts }, engines: engines(), active, choice: s.sttEngine, language: s.sttLanguage, browserLang: sttLanguageFor('browser', s.sttLanguage), engineLang: sttLanguageFor(active, s.sttLanguage) });
     }
     case 'GET /api/vocabulary':
       return sendJson(res, { ...loadVocab(), terms: vocabularyTerms() });
@@ -388,16 +440,28 @@ wss.on('connection', (ws) => {
 
 /* ---------- speech: correct, log, dispatch ---------- */
 const sttLog = path.join(config.dataDir, 'stt-log.jsonl');
+const RECENT_CLIPS = 20;
+
+/** A URI-encoded JSON request header, or undefined. */
+function headerJson(req, name) {
+  try {
+    const v = req.headers[name];
+    return typeof v === 'string' && v ? JSON.parse(decodeURIComponent(v)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 /**
  * @param {string} raw
- * @param {{ uncertain?: Array<{ word: string, confidence: number }>, engine?: string, sttMs?: number, lowOverall?: boolean }} [opts]
+ * @param {{ uncertain?: Array<{ word: string, confidence: number }>, engine?: string, sttMs?: number, lowOverall?: boolean, audio?: object, stages?: object }} [opts]
  */
-async function handleUtterance(raw, { uncertain = [], engine, sttMs = 0, lowOverall = false } = {}) {
+async function handleUtterance(raw, { uncertain = [], engine, sttMs = 0, lowOverall = false, audio = undefined, stages = undefined } = {}) {
+  if (isBlankText(raw)) return { empty: true, engine };
   // A quick "Sure, checking." right away, while the words are corrected and the reply is written.
   dispatcher.acknowledge(raw);
   const s = getSettings();
   const fixed = await corrector.correct(raw, { uncertain, recent, smart: s.smartCorrection });
-  const entry = { at: new Date().toISOString(), engine, sttMs, fixMs: fixed.ms, raw, text: fixed.text, changes: fixed.changes, unsure: fixed.unsure, smart: fixed.smart, timedOut: Boolean(fixed.timedOut) };
+  const entry = { at: new Date().toISOString(), engine, sttMs, fixMs: fixed.ms, raw, text: fixed.text, changes: fixed.changes, unsure: fixed.unsure, smart: fixed.smart, timedOut: Boolean(fixed.timedOut), ...(fixed.rejected ? { rejected: fixed.rejected } : {}), ...(audio ? { audio } : {}), ...(stages ? { stages } : {}) };
   fs.appendFileSync(sttLog, JSON.stringify(entry) + '\n');
   broadcast({ type: 'heard', text: fixed.text, raw: fixed.text !== raw ? raw : null, unsure: fixed.unsure, engine, ms: sttMs + fixed.ms });
   logConvo('User', fixed.text !== raw ? `${fixed.text}  _(heard: "${raw}")_` : raw);
@@ -423,7 +487,8 @@ dispatcher.on('say_end', () => {
   if (replyBuf.trim()) logConvo('Assistant', replyBuf.trim());
   broadcast({ type: 'say_end' });
 });
-dispatcher.on('speak', (text) => broadcast({ type: 'speak', text }));
+// `prev`: the piece of the same reply spoken just before, so the voice carries its intonation on.
+dispatcher.on('speak', (text, { prev = '' } = {}) => broadcast({ type: 'speak', text, ...(prev && { prev }) }));
 dispatcher.on('activity', (text) => broadcast({ type: 'activity', text }));
 dispatcher.on('busy', (busy) => broadcast({ type: 'busy', busy }));
 dispatcher.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assistant', usd) }));

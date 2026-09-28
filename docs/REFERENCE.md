@@ -41,7 +41,7 @@ Tuned for English with an Indian accent, and **locked to English**: every engine
 
 | Engine | Cost | Notes |
 |---|---|---|
-| **Local Whisper** (default via *Auto*) | Free, private, offline | whisper.cpp + large-v3-turbo on the Mac's GPU, ~1s per sentence. Always English: started with `-l en` and every request sends `language=en`, no auto-detect, no translation. Setup: `npm run setup:whisper`. |
+| **Local Whisper** (default via *Auto*) | Free, private, offline | whisper.cpp on the Mac's GPU: large-v3-turbo, with the silence squeezed out of each clip and Whisper's silence phrases ("Thank you", "you") dropped. large-v3 only when chosen with `VOICEOPS_WHISPER_MODEL` (it did worse on real speech: docs/speech-recognition.md). Always English: started with `-l en` and every request sends `language=en`, no auto-detect, no translation. Setup: `npm run setup:whisper`. |
 | **Deepgram Nova-3** | Paid per minute of audio | Cloud; uses your vocabulary as *keyterms*; gets the language setting (`en-IN`, `en-US` or `en`). Add `DEEPGRAM_API_KEY` to `.env` and restart. |
 | **Browser** | Free | Chrome's built-in engine, set to `en-IN` or `en-US` (`browserLang` from `GET /api/stt`; `en` means `en-US`). Fallback; also shows your words live while you talk. |
 

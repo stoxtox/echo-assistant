@@ -1,7 +1,8 @@
 import { createVoiceViz } from '/voiceviz.js';
 import { AmbientPiano, PIANO_MOODS } from '/piano.js';
-import { createKaraoke, speechBounds, alignTimings } from '/karaoke.js';
+import { createKaraoke, speechBounds, alignTimings, pieceGap, playPlan } from '/karaoke.js';
 import { createWizard, suggestionsFor, friendlyPath, STEPS } from '/onboarding.js';
+import { WakeListener } from '/wake.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -17,7 +18,7 @@ const els = {
   modalBody: $('modalBody'), modalActions: $('modalActions'), restartOverlay: $('restartOverlay'),
   cost: $('cost'), pinCurrent: $('pinCurrent'),
   setStt: $('setStt'), sttHint: $('sttHint'), setSttLang: $('setSttLang'), sttLangField: $('sttLangField'),
-  setPause: $('setPause'), pauseVal: $('pauseVal'), setSmart: $('setSmart'), setPreview: $('setPreview'),
+  setPause: $('setPause'), pauseVal: $('pauseVal'), setSmart: $('setSmart'), setPreview: $('setPreview'), setWake: $('setWake'), setWakeSens: $('setWakeSens'), wakeSensVal: $('wakeSensVal'), wakePill: $('wakePill'),
   vocabWords: $('vocabWords'), vocabSave: $('vocabSave'), vocabFixes: $('vocabFixes'), pinNew: $('pinNew'), pinSave: $('pinSave'), pinHint: $('pinHint'),
   chatEmpty: $('chatEmpty'), tabCount: $('tabCount'), toast: $('toast'), main: document.querySelector('main'),
   piano: $('piano'), pianoToggle: $('pianoToggle'), pianoMoodBtn: $('pianoMoodBtn'), pianoMenu: $('pianoMenu'),
@@ -96,7 +97,7 @@ function handle(msg) {
       break;
     case 'say_end': liveBubble?.classList.remove('streaming'); karaoke.release(liveBubble); liveBubble = null; break;
     // Sentences of the reply being streamed arrive after their text, so they highlight in its bubble.
-    case 'speak': speak(msg.text, liveBubble); break;
+    case 'speak': speak(msg.text, liveBubble, { prev: msg.prev }); break;
     case 'say': speakAll(msg.text, addMsg('ai', msg.text)); break;
     case 'activity': addMsg('activity', '→ ' + msg.text); break;
     case 'busy': setBusy(msg.busy); break;
@@ -481,6 +482,7 @@ function sfx(kind) {
   if (!settings.sounds || ctx.state !== 'running') return;
   const notes = {
     listen: [[660, 0], [880, 0.07]],
+    wake: [[784, 0], [1175, 0.09]], // "Hey Echo" heard
     stop: [[880, 0], [587, 0.07]],
     send: [[988, 0]],
     start: [[523, 0], [659, 0.06]],
@@ -505,20 +507,43 @@ function sfx(kind) {
 }
 
 /* ---------- Speech output ---------- */
-// Each piece (a clause or sentence) is fetched as soon as it arrives, so audio is ready early, and
-// the pieces are scheduled back to back on the audio clock: no gaps between them.
+// Each piece (one or more whole sentences, lib/speech.js) is fetched as soon as it arrives, so the
+// next one is ready while this one plays. Pieces are scheduled on the audio clock with the
+// engine's padding trimmed off and a short natural pause between them (a breath after a sentence),
+// so there's no dead air and no pieces run together.
 const speechQueue = [];
 let playing = null;
 let speaking = false;
 let speechGen = 0;
 let playEnd = 0; // audio-clock time when everything scheduled so far has been said
+let lastSpoken = ''; // text of the piece scheduled last, for the pause after it
 const sources = new Set(); // audio still sounding (the previous piece can overlap the handover)
 
 function splitSentences(text) {
   return (text.match(/[^.!?\n]+[.!?]*["')\]]?/g) || [text]).map((s) => s.trim()).filter((s) => s.length > 1);
 }
+/** A whole reply at once: sentences grouped the same way as streamed ones (two, then ~30 words). */
 function speakAll(text, bubble = null) {
-  splitSentences(text).forEach((s) => speak(s, bubble));
+  const groups = [];
+  let cur = [];
+  let words = 0;
+  for (const s of splitSentences(text)) {
+    const n = s.split(/\s+/).length;
+    const full = groups.length === 0 ? cur.length >= 2 || words >= 14 : words >= 8 && words + n > 30;
+    if (cur.length && full) {
+      groups.push(cur.join(' '));
+      cur = [];
+      words = 0;
+    }
+    cur.push(s);
+    words += n;
+  }
+  if (cur.length) groups.push(cur.join(' '));
+  let prev = '';
+  for (const g of groups) {
+    speak(g, bubble, { prev });
+    prev = g;
+  }
   karaoke.release(bubble);
 }
 
@@ -526,15 +551,22 @@ function speakAll(text, bubble = null) {
 // context's, shifted by the output latency so the glow lands when you hear the word.
 const karaoke = createKaraoke({ now: () => ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0) });
 
-function speak(text, bubble = null) {
+/**
+ * @param {string} text @param {HTMLElement | null} [bubble]
+ * @param {{ prev?: string, soft?: boolean }} [o]  prev: the piece before (the voice carries its
+ *   intonation on); soft: quieter, for a "didn't catch that"
+ */
+function speak(text, bubble = null, { prev = '', soft = false } = {}) {
   if (!els.speakOut.checked || !text.trim()) return;
-  const item = { text, gen: speechGen, chunk: karaoke.bind(bubble, text), words: null };
+  // You're holding Space to talk: the rest of the old reply stays quiet (it's in the chat).
+  if (listening && pttRecording) return;
+  const item = { text, gen: speechGen, chunk: karaoke.bind(bubble, text), words: null, soft };
   if (settings.ttsProvider !== 'browser') {
     item.controller = new AbortController();
     item.audio = fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(prev && { previousText: prev }) }),
       signal: item.controller.signal,
     })
       .then((r) => {
@@ -568,16 +600,22 @@ async function playNext() {
     if (item.gen !== speechGen) return;
     await new Promise((resolve) => {
       const src = ctx.createBufferSource();
-      // Right after the piece before it (or now, if there's been a pause).
-      const at = Math.max(ctx.currentTime + 0.02, playEnd);
-      playEnd = at + buffer.duration;
+      // Only the speech itself (the engine's padding trimmed), a natural pause after the piece
+      // before it; or now, if that pause has already gone by while this piece was being made.
+      const { offset, length } = playPlan(speechBounds(buffer.getChannelData(0), buffer.sampleRate), buffer.duration);
+      const at = Math.max(ctx.currentTime + 0.02, playEnd + pieceGap(lastSpoken, settings.speed));
+      playEnd = at + length;
+      lastSpoken = item.text;
       if (item.chunk) {
-        const times = item.words ? alignTimings(item.text, item.words) : null;
-        const bounds = times ? undefined : speechBounds(buffer.getChannelData(0), buffer.sampleRate);
-        karaoke.play(item.chunk, { start: at, duration: buffer.duration, times, bounds });
+        const times = item.words ? alignTimings(item.text, item.words)?.map((t) => ({ s: Math.max(0, t.s - offset), e: Math.max(0, t.e - offset) })) : null;
+        karaoke.play(item.chunk, { start: at, duration: length, times, bounds: times ? undefined : { lead: 0.02, tail: 0.02 } });
       }
       src.buffer = buffer;
-      src.connect(outAnalyser);
+      if (item.soft) {
+        const g = ctx.createGain();
+        g.gain.value = 0.55;
+        src.connect(g).connect(outAnalyser);
+      } else src.connect(outAnalyser);
       sources.add(src);
       let handed = false;
       const handOver = () => { if (!handed) { handed = true; resolve(); } };
@@ -597,7 +635,7 @@ async function playNext() {
       // when this one ends. (speak() calls handOver when a piece arrives later.)
       item.handOver = handOver;
       if (speechQueue.length) handOver();
-      src.start(at);
+      src.start(at, offset, length);
     });
   } catch {
     if (item.gen !== speechGen) return;
@@ -616,6 +654,7 @@ function browserSpeak(item) {
       speechSynthesis.getVoices().find((x) => /premium|enhanced|siri|samantha/i.test(x.name));
     if (v) u.voice = v;
     u.rate = settings.speed;
+    if (item.soft) u.volume = 0.6;
     // Chrome sometimes never fires onend; allow ~2.5 words a second plus slack before giving up.
     const words = item.text.split(/\s+/).length;
     const guard = setTimeout(() => { speechSynthesis.cancel(); resolve(); }, (words / 2.5 / (settings.speed || 1)) * 1000 + 5000);
@@ -630,7 +669,7 @@ function browserSpeak(item) {
 // them: dispatcher.setVoiceBusy).
 let voiceBusySent = false;
 function reportVoiceBusy(force = false) {
-  const b = Boolean(speaking || hearing || transcribing || listening && spaceHeld);
+  const b = Boolean(speaking || hearing || transcribing || listening && spaceHeld || wakeState === 'awake');
   if (b === voiceBusySent && !force) return;
   voiceBusySent = b;
   send({ type: 'voice_busy', busy: b });
@@ -639,6 +678,13 @@ function reportVoiceBusy(force = false) {
 function setSpeaking(on) {
   if (speaking === on) return;
   speaking = on;
+  if (!on) {
+    echoQuietUntil = performance.now() + ECHO_TAIL_MS;
+    lastSpokeAt = performance.now();
+    // She asked you something: the wake listener takes your answer without "Hey Echo" (hush() clears
+    // lastSpoken first, so a hushed reply doesn't count).
+    if (/\?["')\s]*$/.test(lastSpoken)) setTimeout(() => { if (wakeListening() && !echoing() && wake.state === 'idle') wake.expectFollowUp(); }, ECHO_TAIL_MS + 50);
+  }
   if (on) pauseHandsFree();
   else resumeHandsFree();
   renderOrb();
@@ -653,6 +699,7 @@ function hush() {
   for (const src of sources) { try { src.stop(); } catch {} }
   sources.clear();
   playEnd = 0;
+  lastSpoken = '';
   speechSynthesis.cancel();
   karaoke.stopAll();
   setSpeaking(false);
@@ -671,24 +718,49 @@ let hearing = false; // you're mid-sentence (hands-free detector)
 let transcribing = false;
 let micAnalyser = null;
 let micReady = null;
+let micTrack = null;
+let tapLoaded = false;
+let micNodes = [];
 
 const serverEngine = () => sttActive !== 'browser';
 
+// A mic stream held for hours can go dead (the Mac slept, the input device changed, or another
+// capture took the mic): it keeps delivering silence, so every clip transcribes as "." while the
+// live preview, which opens its own capture, still shows your words. So the stream is dropped and
+// opened again whenever it's ended, muted or caught sending pure silence.
+function dropMic(why) {
+  if (!micReady) return;
+  console.warn('[mic] reopening:', why);
+  micReady = null;
+  for (const node of micNodes) try { node.disconnect(); } catch {}
+  micNodes = [];
+  try { micTrack?.stop(); } catch {}
+  micTrack = null;
+}
+navigator.mediaDevices?.addEventListener?.('devicechange', () => { if (!listening) dropMic('input device changed'); });
+
 async function ensureMic() {
+  if (micReady && micTrack && (micTrack.readyState !== 'live' || micTrack.muted)) dropMic(`track ${micTrack.readyState}${micTrack.muted ? ', muted' : ''}`);
+  if (ctx.state !== 'running') ctx.resume().catch(() => {});
   if (micReady) return micReady;
   micReady = (async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    micTrack = stream.getAudioTracks()[0] || null;
     const source = ctx.createMediaStreamSource(stream);
     micAnalyser = ctx.createAnalyser();
     micAnalyser.fftSize = 256;
     source.connect(micAnalyser);
-    const tapCode = `class Tap extends AudioWorkletProcessor { process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; } } registerProcessor('tap', Tap);`;
-    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([tapCode], { type: 'application/javascript' })));
+    // Frames of 1024 samples (~21 ms), not the worklet's 128: the mic stays open for the wake word,
+    // so fewer, bigger messages keep the page's idle CPU down.
+    const tapCode = `class Tap extends AudioWorkletProcessor { constructor() { super(); this.b = new Float32Array(1024); this.n = 0; } process(inputs) { const ch = inputs[0][0]; if (ch) for (let i = 0; i < ch.length; i++) { this.b[this.n++] = ch[i]; if (this.n === 1024) { this.port.postMessage(this.b.slice(0)); this.n = 0; } } return true; } } registerProcessor('tap', Tap);`;
+    if (!tapLoaded) await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([tapCode], { type: 'application/javascript' })));
+    tapLoaded = true;
     const tap = new AudioWorkletNode(ctx, 'tap');
     const mute = ctx.createGain();
     mute.gain.value = 0;
     source.connect(tap).connect(mute).connect(ctx.destination); // keeps the tap running, silently
     tap.port.onmessage = (e) => onAudio(e.data);
+    micNodes = [source, tap, mute];
   })();
   micReady.catch(() => {
     micReady = null;
@@ -707,15 +779,60 @@ let noiseFloor = 0.004;
 let voicedMs = 0;
 let silentMs = 0;
 
+// Echo's own voice must never become part of what you said. Echo cancellation is asked for (and
+// its state saved with each clip), and on top of that the mic ignores everything while Echo speaks
+// and for a short tail after (the room and the speakers' latency): the pre-roll is emptied, so a
+// clip never starts with the end of Echo's reply, and hands-free doesn't hear her as you.
+const ECHO_TAIL_MS = 400;
+let echoQuietUntil = 0;
+// Hands-free with the wake word on: speech right after Echo's reply is a follow-up, so it doesn't
+// need her name (the server checks: lib/heard.js addressesEcho).
+const FOLLOW_UP_MS = 15000;
+let lastSpokeAt = -Infinity;
+
+// Click-to-talk (the mic button or the Mac menu, not Space held) ends by itself: after a pause once
+// you've spoken, or after a while with no speech at all, so an open mic doesn't record the room.
+const CLICK_NO_SPEECH_MS = 8000;
+let tap = { ms: 0, voicedMs: 0, silentMs: 0, spoke: false };
+function clickAutoEnd(frame, frameMs) {
+  if (!listening) return;
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  const loud = Math.sqrt(sum / frame.length) > Math.max(0.01, noiseFloor * 3.5);
+  tap.ms += frameMs;
+  if (loud) {
+    tap.voicedMs += frameMs;
+    tap.silentMs = 0;
+    if (tap.voicedMs > 200) tap.spoke = true;
+  } else {
+    tap.voicedMs = Math.max(0, tap.voicedMs - frameMs);
+    tap.silentMs += frameMs;
+  }
+  if ((tap.spoke && tap.silentMs >= Math.max(settings.endSilenceMs || 1300, 2000)) || (!tap.spoke && tap.ms > CLICK_NO_SPEECH_MS)) stopListening();
+}
+const echoing = () => speaking || sources.size > 0 || performance.now() < echoQuietUntil;
+
 function onAudio(frame) {
   const frameMs = (frame.length / ctx.sampleRate) * 1000;
-  preRoll.push(frame);
-  while (preRoll.length * frameMs > PRE_ROLL_MS) preRoll.shift();
-  if (!serverEngine() || !listening || speaking) return;
-  if (!els.handsFree.checked) {
-    if (pttRecording && clip) clip.push(frame);
+  const echo = echoing();
+  if (echo) preRoll.length = 0;
+  else {
+    preRoll.push(frame);
+    while (preRoll.length * frameMs > PRE_ROLL_MS) preRoll.shift();
+  }
+  // Push-to-talk records until the tail after you let go (listening is already off by then).
+  if (pttRecording && clip) {
+    clip.push(frame);
+    if (!spaceHeld) clickAutoEnd(frame, frameMs);
     return;
   }
+  if (wakeListening()) {
+    // Echo's own voice never reaches the wake listener: it's muted while she speaks and just after.
+    if (echo) { if (wake.state !== 'idle' || wake.buf) wake.reset(); }
+    else wake.feed(frame);
+    return;
+  }
+  if (!serverEngine() || !listening || echo || !els.handsFree.checked) return;
   // Hands-free: energy detector with an adaptive noise floor.
   let sum = 0;
   for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
@@ -744,19 +861,39 @@ function onAudio(frame) {
 function finishClip() {
   const chunks = clip || [];
   clip = null;
+  // Mic off: push-to-talk still works, and the mic is let go again right after.
+  if (micOff && !els.handsFree.checked) dropMic('mic off');
   hearing = false;
   silentMs = 0;
   voicedMs = 0;
   renderOrb();
+  // What the live listener showed for this clip; it's the fallback if the clip transcribes blank.
+  const live = liveText();
+  resetLive();
   const samples = chunks.reduce((n, c) => n + c.length, 0);
-  if (samples / ctx.sampleRate < 0.4) return; // a click or a cough
+  if (samples / ctx.sampleRate < 0.4) {
+    // A click or a cough; but if the live listener caught words, the clip was cut short.
+    if (live) sendClip(null, live, { seconds: +(samples / ctx.sampleRate).toFixed(2), tooShort: true });
+    return;
+  }
   const pcm = new Float32Array(samples);
   let o = 0;
+  let peak = 0;
   for (const c of chunks) {
     pcm.set(c, o);
     o += c.length;
   }
-  sendClip(encodeWav(downsample(pcm, ctx.sampleRate, 16000), 16000));
+  for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+  const notes = {
+    seconds: +(samples / ctx.sampleRate).toFixed(2), peak: +peak.toFixed(4), rate: ctx.sampleRate, ctxState: ctx.state,
+    trackState: micTrack?.readyState, trackMuted: Boolean(micTrack?.muted), mode: els.handsFree.checked ? 'hands-free' : 'push-to-talk',
+    // Did the browser really turn echo cancellation on? (Some inputs and browsers ignore the ask.)
+    aec: micTrack?.getSettings?.().echoCancellation ?? null, echoTailMs: ECHO_TAIL_MS,
+    followUp: performance.now() - lastSpokeAt < FOLLOW_UP_MS,
+  };
+  // Pure silence from the mic: the stream has gone dead. Open a fresh one for next time.
+  if (peak < 0.0005) dropMic('the clip was pure silence');
+  sendClip(encodeWav(downsample(pcm, ctx.sampleRate, 16000), 16000), live, notes);
 }
 
 function downsample(pcm, from, to) {
@@ -784,16 +921,45 @@ function encodeWav(samples, rate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-async function sendClip(wav) {
+const isBlank = (t) => !/[\p{L}\p{N}]/u.test(String(t || ''));
+
+// Nothing was heard, not even by the live listener: nothing goes to Echo. A small note in the
+// chat, and the first time in a row she says so, softly; after that, just the note.
+let missedOnce = false;
+function didntCatch() {
+  els.state.textContent = "Didn't catch that — try again.";
+  addMsg('missed', "Didn't catch that.");
+  if (!missedOnce) speak("Sorry, I didn't catch that.", null, { soft: true });
+  missedOnce = true;
+}
+
+/**
+ * Send a clip to be transcribed, with what the live listener showed (the server uses it when the
+ * transcription comes back blank) and notes on the mic, for finding why. With no clip (cut too
+ * short to send), the live text goes as typed-in speech.
+ * @param {Blob | null} wav @param {string} live @param {object} notes
+ */
+async function sendClip(wav, live = '', notes = {}) {
+  if (!wav) {
+    if (!isBlank(live)) { sfx('send'); send({ type: 'user_text', text: live, confidence: 0.7 }); }
+    return;
+  }
   transcribing = true;
   els.interim.textContent = els.interim.textContent || 'Transcribing…';
   renderOrb();
   sfx('send');
   try {
-    const res = await fetch('/api/utterance', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+    const headers = { 'Content-Type': 'audio/wav', 'X-Echo-Clip': encodeURIComponent(JSON.stringify(notes)) };
+    if (!isBlank(live)) headers['X-Echo-Live'] = encodeURIComponent(JSON.stringify(live.slice(0, 2000)));
+    const res = await fetch('/api/utterance', { method: 'POST', headers, body: wav });
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || 'Transcription failed');
-    if (out.empty) els.state.textContent = "Didn't catch that — try again.";
+    // Not a turn, and nothing to say about it: talk that wasn't for Echo, or her own voice.
+    if (out.reason === 'not_for_echo') els.state.textContent = 'Not for me? Say "Echo" first.';
+    else if (out.reason === 'own_voice') els.state.textContent = 'That was my own voice; ignored.';
+    else if (out.reason === 'wake_only') els.state.textContent = "I'm here. Say \"Hey Echo\" and your request.";
+    else if (out.empty) didntCatch();
+    else missedOnce = false;
   } catch (e) {
     addMsg('error', `Couldn't transcribe: ${e.message}`);
   } finally {
@@ -807,7 +973,14 @@ async function sendClip(wav) {
 let rec = null;
 let recOn = false;
 let finalBuf = '';
+let interimBuf = '';
 let lastConfidence = 1;
+/** Everything the live listener has shown for the current utterance. */
+const liveText = () => (finalBuf + interimBuf).trim();
+function resetLive() {
+  finalBuf = '';
+  interimBuf = '';
+}
 let silenceTimer = null;
 if (SR) {
   rec = new SR();
@@ -824,6 +997,7 @@ if (SR) {
         lastConfidence = Math.min(lastConfidence, r[0].confidence || 1);
       } else interim += r[0].transcript;
     }
+    interimBuf = interim;
     if (serverEngine() && !settings.livePreview) return;
     els.interim.textContent = (finalBuf + interim).trim();
     if (!serverEngine() && els.handsFree.checked) {
@@ -845,14 +1019,14 @@ function flushBrowser() {
   clearTimeout(silenceTimer);
   const text = finalBuf.trim() || (!els.handsFree.checked ? els.interim.textContent.trim() : '');
   const confidence = lastConfidence;
-  finalBuf = '';
+  resetLive();
   lastConfidence = 1;
   els.interim.textContent = '';
-  if (text) { sfx('send'); send({ type: 'user_text', text, confidence }); }
+  if (!isBlank(text)) { sfx('send'); send({ type: 'user_text', text, confidence }); }
 }
 
 function startRec() {
-  finalBuf = '';
+  resetLive();
   if (rec && !recOn && (!serverEngine() || settings.livePreview)) try { rec.start(); } catch {}
 }
 function stopRec() {
@@ -873,10 +1047,12 @@ async function startListening() {
   }
   if (listening) return;
   listening = true;
+  wake.reset();
   sfx('listen');
   if (serverEngine() && !els.handsFree.checked) {
     pttRecording = true;
     clip = [...preRoll];
+    tap = { ms: 0, voicedMs: 0, silentMs: 0, spoke: false };
   }
   startRec();
   renderOrb();
@@ -911,6 +1087,65 @@ function resumeHandsFree() {
   if (els.handsFree.checked && !speaking) setTimeout(() => !speaking && startListening(), 250);
 }
 
+/* --- "Hey Echo": the wake word --- */
+// With the wake word on, the mic stays open and public/wake.js watches its loudness. Each burst of
+// speech is checked by this Mac's Whisper (POST /api/wake); nothing is sent anywhere else or saved
+// before "Hey Echo". Then a chime, the voice lights up, and your request is recorded until you
+// pause. Space push-to-talk works as always. The pill in the toolbar shows it's on and turns the
+// mic off completely.
+let micOff = pref.get('micOff', false);
+let wakeAvailable = false; // needs local Whisper (GET /api/stt)
+let wakeState = 'idle';
+const wakeOn = () => settings.wakeWord !== false && wakeAvailable && serverEngine() && !micOff && !els.handsFree.checked;
+const wakeListening = () => wakeOn() && !listening && !pttRecording;
+const wake = new WakeListener({
+  rate: ctx.sampleRate,
+  check: async (samples) => {
+    const res = await fetch('/api/wake', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: encodeWav(downsample(samples, ctx.sampleRate, 16000), 16000), signal: AbortSignal.timeout(5000) });
+    return res.ok ? res.json() : { wake: false };
+  },
+  onWake: () => {
+    hush();
+    sfx('wake');
+  },
+  onTurn: (samples, info) => {
+    const notes = {
+      seconds: +(samples.length / ctx.sampleRate).toFixed(2), rate: ctx.sampleRate, ctxState: ctx.state, trackState: micTrack?.readyState,
+      trackMuted: Boolean(micTrack?.muted), mode: 'wake', followUp: info.followUp, aec: micTrack?.getSettings?.().echoCancellation ?? null, echoTailMs: ECHO_TAIL_MS,
+    };
+    sendClip(encodeWav(downsample(samples, ctx.sampleRate, 16000), 16000), '', notes);
+  },
+  onCancel: (why) => { if (why === 'no_request') sfx('stop'); },
+  onState: (st) => {
+    wakeState = st;
+    renderOrb();
+  },
+});
+/** Open or let go of the mic to match the wake-word setting, hands-free and the mic-off button. */
+function syncWake() {
+  if (!wakeOn()) {
+    wake.reset();
+    if (!listening && !els.handsFree.checked) dropMic('wake word off');
+  } else ensureMic().catch(() => {});
+  renderWakePill();
+}
+function renderWakePill() {
+  const show = settings.wakeWord !== false && wakeAvailable && serverEngine() && !els.handsFree.checked;
+  els.wakePill.hidden = !show;
+  els.wakePill.classList.toggle('off', micOff);
+  els.wakePill.classList.toggle('awake', wakeState === 'awake');
+  els.wakePill.setAttribute('aria-pressed', String(!micOff));
+  els.wakePill.querySelector('.tb-text').textContent = micOff ? 'Mic off' : 'Hey Echo';
+  els.wakePill.dataset.tip = micOff ? 'Mic off. Click to listen for "Hey Echo" again (Space still works)' : ctx.state !== 'running' ? 'Click anywhere to start listening for "Hey Echo"' : 'Listening for "Hey Echo" on this Mac. Click to turn the mic off';
+}
+els.wakePill.onclick = () => {
+  micOff = !micOff;
+  pref.set('micOff', micOff);
+  syncWake();
+};
+// The page can't hear anything until you've clicked or pressed a key once (browser audio rules).
+ctx.addEventListener('statechange', renderWakePill);
+
 /* ---------- Orb + voice visual ---------- */
 function renderOrb() {
   viz.setState(vizState());
@@ -921,12 +1156,16 @@ function renderOrb() {
   els.mic.classList.toggle('speaking', speaking);
   els.mic.classList.toggle('thinking', (busy || transcribing) && !listening && !speaking);
   const engineName = { whisper: 'local Whisper', deepgram: 'Deepgram', browser: 'browser' }[sttActive];
+  const awake = wakeState === 'awake';
+  if (els.wakePill) renderWakePill();
   els.state.innerHTML = transcribing ? 'Transcribing…'
+    : awake ? 'Listening… go ahead'
     : hearing ? 'Hearing you…'
     : listening ? (els.handsFree.checked ? `Listening (${engineName})…` : `Listening (${engineName}) · release <kbd>Space</kbd> to send`)
     : speaking ? 'Speaking · <kbd>Esc</kbd> to hush, <kbd>Space</kbd> to cut in'
     : busy ? 'Thinking…'
     : els.handsFree.checked ? 'Hands-free: just talk'
+    : wakeOn() ? 'Say “Hey Echo” or hold <kbd>Space</kbd> · <kbd>Esc</kbd> to hush'
     : 'Hold <kbd>Space</kbd> or click to talk · <kbd>Esc</kbd> to hush';
   reportToMac();
 }
@@ -954,12 +1193,12 @@ reportToMac.last = '';
 // mic while you talk (see voiceviz.js), and morphs smoothly between states.
 const darkScheme = matchMedia('(prefers-color-scheme: dark)');
 const viz = createVoiceViz(els.viz, {
-  audio: () => (speaking ? outAnalyser : listening ? micAnalyser : null),
+  audio: () => (speaking ? outAnalyser : listening || wakeState === 'awake' ? micAnalyser : null),
   theme: darkScheme.matches ? 'dark' : 'light',
 });
 darkScheme.addEventListener('change', () => viz.setTheme(darkScheme.matches ? 'dark' : 'light'));
 function vizState() {
-  return speaking ? 'speaking' : listening ? 'listening' : busy || transcribing ? 'thinking' : 'idle';
+  return speaking ? 'speaking' : listening || wakeState === 'awake' ? 'listening' : busy || transcribing ? 'thinking' : 'idle';
 }
 
 // The voice is full size while Echo speaks, listens or works. After a few quiet seconds it eases
@@ -970,7 +1209,7 @@ const HERO_IDLE_MS = 2500;
 let heroTimer = 0;
 function heroSize() {
   // Hands-free keeps the mic open all the time, so there only hearing you counts as listening.
-  const active = speaking || busy || transcribing || hearing || (listening && !els.handsFree.checked);
+  const active = speaking || busy || transcribing || hearing || wakeState === 'awake' || (listening && !els.handsFree.checked);
   // On the empty welcome screen there's nothing to make room for.
   if (active || !els.chatEmpty.hidden) {
     clearTimeout(heroTimer);
@@ -985,7 +1224,7 @@ function heroSize() {
   }, HERO_IDLE_MS);
 }
 heroSize.check = () => {
-  const active = speaking || busy || transcribing || hearing || (listening && !els.handsFree.checked);
+  const active = speaking || busy || transcribing || hearing || wakeState === 'awake' || (listening && !els.handsFree.checked);
   if (!active && els.chatEmpty.hidden) els.hero.classList.add('compact');
 };
 
@@ -1192,6 +1431,10 @@ function applySettings(s) {
   els.pauseVal.textContent = `${(settings.endSilenceMs / 1000).toFixed(1)}s`;
   els.setSmart.checked = settings.smartCorrection;
   els.setPreview.checked = settings.livePreview;
+  els.setWake.checked = settings.wakeWord !== false;
+  els.setWakeSens.value = String(settings.wakeSensitivity ?? 0.5);
+  els.wakeSensVal.textContent = wakeSensLabel(settings.wakeSensitivity ?? 0.5);
+  syncWake();
   els.setSttLang.value = settings.sttLanguage || 'en-IN';
   els.setBeginner.checked = Boolean(settings.beginnerMode);
   els.setSafe.checked = Boolean(settings.safeMode);
@@ -1266,6 +1509,8 @@ async function loadStt() {
     const st = await fetch('/api/stt').then((r) => r.json());
     const wasServer = serverEngine();
     sttActive = st.active;
+    wakeAvailable = Boolean(st.wake?.available);
+    syncWake();
     if (rec && st.browserLang && rec.lang !== st.browserLang) rec.lang = st.browserLang;
     const label = { auto: 'Auto (best available)', whisper: 'Local Whisper (free, private)', deepgram: 'Deepgram Nova-3 (cloud, paid)', browser: 'Browser (basic)' };
     els.setStt.replaceChildren(
@@ -1308,6 +1553,10 @@ els.setPause.oninput = () => { els.pauseVal.textContent = `${(els.setPause.value
 els.setPause.onchange = () => saveSetting({ endSilenceMs: Number(els.setPause.value) });
 els.setSmart.onchange = () => saveSetting({ smartCorrection: els.setSmart.checked });
 els.setPreview.onchange = () => saveSetting({ livePreview: els.setPreview.checked });
+els.setWake.onchange = () => saveSetting({ wakeWord: els.setWake.checked });
+const wakeSensLabel = (v) => (v < 0.34 ? 'strict' : v > 0.66 ? 'loose' : 'normal');
+els.setWakeSens.oninput = () => { els.wakeSensVal.textContent = wakeSensLabel(Number(els.setWakeSens.value)); };
+els.setWakeSens.onchange = () => saveSetting({ wakeSensitivity: Number(els.setWakeSens.value) });
 els.vocabSave.onclick = async () => {
   await selfApi('/api/vocabulary', { words: els.vocabWords.value.split('\n') });
   loadVocab();
@@ -1598,6 +1847,7 @@ renderVoiceButton();
 els.handsFree.onchange = () => {
   pref.set('handsFree', els.handsFree.checked);
   els.handsFree.checked ? startListening() : stopListening();
+  syncWake();
   renderOrb();
 };
 els.speakOut.onchange = () => { pref.set('speakOut', els.speakOut.checked); if (!els.speakOut.checked) hush(); renderVoiceButton(); };
@@ -1816,7 +2066,7 @@ let onboarding = null; // GET /api/onboarding: whether setup is needed, and the 
 const wizard = createWizard({
   applySettings,
   speak: (text) => { hush(); unlockAudio(); speakAll(text); },
-  setHandsFree: (on) => { els.handsFree.checked = on; pref.set('handsFree', on); if (!on) stopListening(); renderOrb(); },
+  setHandsFree: (on) => { els.handsFree.checked = on; pref.set('handsFree', on); if (!on) stopListening(); syncWake(); renderOrb(); },
   handsFree: () => els.handsFree.checked,
   useExample: putInComposer,
   hush,

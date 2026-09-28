@@ -177,3 +177,81 @@ test('spelled-out names always win, and the corrector never swaps in the user\'s
   assert.equal(guardCorrection('this is Sem speaking', 'this is Sam speaking', { terms: [], own: ['Sam'] }).text, 'this is Sam speaking');
   assert.equal(guardCorrection('ask Tavish', 'ask Sam', { terms: [], own: ['Sam'] }).text, 'ask Tavish');
 });
+
+test('the Whisper prompt is short, names last, spoken the way you say them, and never has aliases', () => {
+  fs.writeFileSync(path.join(dirs.data, 'projects.json'), JSON.stringify({ aliases: { okayshow: 'FitTrack' }, hidden: [], descriptions: {} }));
+  const p = V.whisperPrompt();
+  assert.ok(p.startsWith(`${V.WHISPER_PROMPT_PREFIX} `));
+  assert.ok(p.length <= 320, 'long lists bias Whisper far less (measured)');
+  assert.match(p, /\bFitTrack\.$/, 'the most important name (a project you have a nickname for) goes last, nearest the audio');
+  assert.doesNotMatch(p, /Budget/, 'folder digits are not spoken, and "Budget" is an ordinary word');
+  assert.doesNotMatch(p, /okayshow/i, 'aliases are mishearings, never prompt words');
+  assert.doesNotMatch(p, /\bClaude\b|\bEcho\b/, 'ordinary words need no prompt');
+  assert.ok(p.indexOf('Foodbowl') > p.indexOf('Hoboken'), 'projects after everyday vocabulary');
+  assert.equal(V.spokenName('Notes2.0'), 'Notes');
+  assert.equal(V.spokenName('Fit Track3'), 'Fit Track');
+  assert.equal(V.spokenName('host-redesign'), 'host-redesign');
+  assert.equal(whisperForm(Buffer.from('RIFF'), '').has('prompt'), false, 'no empty prompt');
+});
+
+test('turbo is the Whisper model used; large-v3 only when it is all there is or chosen', async () => {
+  const { whisperModel, WHISPER_MODELS } = await import('../lib/stt.js');
+  const dir = fs.mkdtempSync(path.join(dirs.data, 'models-'));
+  const saved = process.env.VOICEOPS_WHISPER_MODEL;
+  delete process.env.VOICEOPS_WHISPER_MODEL;
+  try {
+    assert.equal(path.basename(whisperModel(dir)), WHISPER_MODELS.at(-1), 'nothing downloaded: the last path (setup says what to run)');
+    fs.writeFileSync(path.join(dir, 'ggml-large-v3-q5_0.bin'), '');
+    assert.equal(path.basename(whisperModel(dir)), 'ggml-large-v3-q5_0.bin', 'only large-v3 there');
+    fs.writeFileSync(path.join(dir, 'ggml-large-v3-turbo-q5_0.bin'), '');
+    assert.equal(path.basename(whisperModel(dir)), 'ggml-large-v3-turbo-q5_0.bin', 'turbo wins: better on real speech, and faster');
+    process.env.VOICEOPS_WHISPER_MODEL = path.join(dir, 'ggml-large-v3-q5_0.bin');
+    assert.equal(path.basename(whisperModel(dir)), 'ggml-large-v3-q5_0.bin', 'chosen explicitly');
+    delete process.env.VOICEOPS_WHISPER_MODEL;
+  } finally {
+    if (saved !== undefined) process.env.VOICEOPS_WHISPER_MODEL = saved;
+  }
+});
+
+test('spelled-out letters a letter or two off still find the project or contact', async () => {
+  const { matchSpelled, applySpelling, spelledWords, editDistance } = await import('../lib/correct.js');
+  assert.equal(editDistance('marold', 'marigold'), 2);
+  assert.equal(matchSpelled('FDBOWL', ['Foodbowl', 'FitTrack']), 'Foodbowl', 'two letters dropped');
+  assert.equal(matchSpelled('CRDZ', ['Cardz']), 'Cardz', 'one letter off a short name');
+  assert.equal(matchSpelled('SSICIO', ['Foodbowl', 'Cardz']), null, 'too far from anything: stays as spelled');
+  assert.equal(matchSpelled('CARDS', ['Cardz', 'Carda']), null, 'two equally close names: no guess');
+  assert.deepEqual(spelledWords('It is F-O-D-B-O-W-L.', ['Foodbowl']).map((s) => s.word), ['Foodbowl']);
+  // What happened: a project name spelled out letter by letter was misheard. Now the letters find the project.
+  assert.equal(applySpelling('I mean Fudbowel project. F-O-D-B-O-W-L.', ['Foodbowl']).text, 'I mean Foodbowl project. F-O-D-B-O-W-L.');
+  assert.equal(applySpelling('Its Tavis, T-A-V-I-S-H.', ['Foodbowl']).text, 'Its Tavish, T-A-V-I-S-H.', 'unknown names keep the spelling');
+});
+
+test('the corrector never swaps in a project the user did not say; unsure words stay as heard', async () => {
+  const { soundsLikeName, guardCorrection } = await import('../lib/correct.js');
+  fs.writeFileSync(path.join(dirs.data, 'projects.json'), JSON.stringify({ aliases: { 'food bowl': 'Foodbowl' }, hidden: [], descriptions: {} }));
+  // What happened: "Okeshoe Project" was turned into another project that sounds nothing like it.
+  const fq = fakeQuery((turn, text) => {
+    if (/Okayshow/.test(text)) return [result(JSON.stringify({ text: "Check what's going on on FitTrack Project.", unsure: [] }))];
+    if (/foodball/.test(text)) return [result(JSON.stringify({ text: 'Open Foodbowl and the gadget', unsure: [] }))];
+    return [result(JSON.stringify({ text: 'Open the Budget2 folder', unsure: [] }))];
+  });
+  const c = new Corrector({ queryFn: fq.queryFn });
+  const a = await c.correct("Check what's going on on Okayshow Project.");
+  assert.equal(a.text, "Check what's going on on Okayshow Project.", 'the raw words stay');
+  assert.ok(a.unsure.includes('Okayshow'), 'and are marked unsure, so Echo asks');
+  assert.deepEqual(a.rejected, [{ heard: 'Okayshow', meant: 'FitTrack' }]);
+  const b = await c.correct('Open foodball and the gadget');
+  assert.equal(b.text, 'Open Foodbowl and the gadget', 'a name that sounds like what was said still goes through');
+  const d = await c.correct('Open the gadget folder');
+  assert.equal(d.text, 'Open the Budget2 folder', 'a learned mishearing of the project still goes through');
+  assert.match(fq.calls[0].options.systemPrompt, /"food bowl" = Foodbowl/, 'confirmed nicknames are given to the model');
+  assert.match(fq.calls[0].options.systemPrompt, /Never pick a project/);
+  c.stop();
+
+  assert.equal(soundsLikeName('acne', 'Acme2'), true);
+  assert.equal(soundsLikeName('rock box', 'Roxbox'), true);
+  assert.equal(soundsLikeName('Okeshoe', 'Orion Project'), false);
+  assert.equal(soundsLikeName('location', 'Acme2', { aliases: ['location'] }), true, 'a confirmed nickname');
+  const g = guardCorrection('talk to Maia', 'talk to Maya', { terms: [], own: [], swappable: [{ name: 'Maya', aliases: [] }] });
+  assert.equal(g.text, 'talk to Maya');
+});

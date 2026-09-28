@@ -111,6 +111,6 @@ test('the palette is the sunset: coral, tangerine and soft gold', () => {
 test('the old disc is gone', () => {
   assert.ok(!fs.existsSync(new URL('../public/disc.js', import.meta.url)));
   const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  assert.ok(!/disc/i.test(app.replace(/discard/gi, '')), 'app.js no longer mentions the disc');
+  assert.ok(!/disc/i.test(app.replace(/discard|disconnect/gi, '')), 'app.js no longer mentions the disc');
   assert.match(app, /createVoiceViz/);
 });

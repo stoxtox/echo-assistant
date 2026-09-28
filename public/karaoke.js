@@ -90,6 +90,37 @@ export function speechBounds(samples, sampleRate, threshold = 0.02) {
   return { lead, tail };
 }
 
+/**
+ * The pause before the next piece of a reply, from how the piece before it ended: a breath after
+ * a sentence, a shorter one after a comma, almost none mid-phrase. Engines pad clips with
+ * silence of their own, which is trimmed off (playPlan), so this is the whole gap you hear.
+ * @param {string} prevText  the piece just spoken ('' for the first) @param {number} [speed]
+ */
+export function pieceGap(prevText, speed = 1) {
+  const t = String(prevText || '').trim();
+  if (!t) return 0;
+  const k = 1 / Math.min(1.6, Math.max(0.6, Number(speed) || 1));
+  if (/[?!]["')\]]*$/.test(t)) return 0.32 * k;
+  if (/(\.|…)["')\]]*$/.test(t)) return 0.28 * k;
+  if (/[:;—–]["')\]]*$/.test(t)) return 0.2 * k;
+  if (/,["')\]]*$/.test(t)) return 0.14 * k;
+  return 0.22 * k; // a line or list item with no punctuation
+}
+
+/**
+ * Which part of a clip to play: the engine's leading and trailing silence cut down to a few
+ * milliseconds, so pieces join without dead air. @param {{ lead: number, tail: number }} bounds
+ * from speechBounds (already a little short of the speech) @param {number} duration seconds
+ * @returns {{ offset: number, length: number }}
+ */
+export function playPlan(bounds, duration) {
+  const d = Math.max(0, Number(duration) || 0);
+  const lead = Math.max(0, Math.min(Number(bounds?.lead) || 0, d * 0.5));
+  const tail = Math.max(0, Math.min(Number(bounds?.tail) || 0, d * 0.5));
+  // Keep a hair of the tail: a hard stop right on the last sound can click.
+  return { offset: lead, length: Math.max(0.05, d - lead - Math.max(0, tail - 0.03)) };
+}
+
 const norm = (w) => String(w).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 /**

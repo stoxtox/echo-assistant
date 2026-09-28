@@ -70,6 +70,7 @@
           <button type="button" class="menu-item menu-link" id="voiceMore" role="menuitem"><span></span><span>Speed, engine and more…</span></button>
         </div>
       </div>
+      <button id="wakePill" class="tb wake-pill" type="button" aria-pressed="true" aria-label="Wake word listener: click to turn the mic off" data-tip="Listening for &quot;Hey Echo&quot;" hidden><span class="wake-dot" aria-hidden="true"></span><span class="tb-text">Hey Echo</span></button>
       <label class="switch tb-switch" data-tip="Talk without holding Space"><input type="checkbox" id="handsFree" role="switch" /><span class="track"></span><span class="switch-label">Hands-free</span></label>
       <span class="tb-sep" aria-hidden="true"></span>
       <button id="newConvo" class="tb" type="button" aria-label="New chat" data-tip="New chat">
@@ -210,6 +211,8 @@
     <label class="field">End-of-sentence pause <span id="pauseVal" class="muted"></span><input id="setPause" type="range" min="800" max="3000" step="100" /></label>
     <label class="switch"><input type="checkbox" id="setSmart" /><span class="track"></span>Smart correction (fixes misheard names using context)</label>
     <label class="switch"><input type="checkbox" id="setPreview" /><span class="track"></span>Show words live while I talk</label>
+    <label class="switch"><input type="checkbox" id="setWake" /><span class="track"></span>Wake word: say "Hey Echo" to talk (listens on this Mac only; Space always works). Hands-free also only answers when I say "Echo"</label>
+    <label class="field">Wake word sensitivity <span id="wakeSensVal" class="muted"></span><input id="setWakeSens" type="range" min="0" max="1" step="0.25" /></label>
     <label class="field">Words to expect (one per line: names, places, brands, dishes)
       <textarea id="vocabWords" rows="7" spellcheck="false"></textarea>
     </label>

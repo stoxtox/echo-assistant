@@ -186,6 +186,13 @@ button.danger-text:hover { border-color: color-mix(in srgb, var(--bad) 55%, var(
 #voiceBtn .ic-off, #voiceBtn.muted .ic-on { display: none; }
 #voiceBtn.muted .ic-off { display: block; }
 #voiceBtn.muted .tb-text { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent); }
+/* "Hey Echo" listener: a small dot that glows while it's listening; click for mic off. */
+.wake-pill[hidden] { display: none; }
+.wake-dot { width: 7px; height: 7px; border-radius: 50%; background: #FF8A4C; box-shadow: 0 0 0 3px rgba(255, 138, 76, .18); }
+.wake-pill.awake .wake-dot { background: #FF6A5B; box-shadow: 0 0 0 4px rgba(255, 106, 91, .3); animation: wakePulse 1s ease-in-out infinite; }
+.wake-pill.off .wake-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
+@keyframes wakePulse { 50% { box-shadow: 0 0 0 7px rgba(255, 106, 91, .08); } }
+@media (prefers-reduced-motion: reduce) { .wake-pill.awake .wake-dot { animation: none; } }
 .tb-switch { height: 34px; padding: 0 10px 0 8px; border-radius: 10px; position: relative; font-weight: 500; font-size: 13px; }
 .tb-switch:hover { background: var(--panel-2); color: var(--ink); }
 
@@ -373,6 +380,7 @@ main {
   padding: 2px 10px; border-radius: 999px; background: transparent; border: 1px dashed var(--line);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.msg.missed { align-self: center; color: var(--muted); font-size: 12.5px; padding: 3px 12px; background: transparent; border: 1px dashed var(--line); }
 .msg.error { align-self: center; color: var(--bad); font-size: 13px; background: color-mix(in srgb, var(--bad) 8%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); }
 .msg .heard { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .msg .unsure { text-decoration: underline dotted var(--warn); text-underline-offset: 3px; }

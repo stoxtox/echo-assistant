@@ -87,3 +87,20 @@ test('ElevenLabs character alignment becomes word timings for the header', () =>
   assert.deepEqual(JSON.parse(decodeURIComponent(header)), words);
   assert.equal(wordsHeader([]), null);
 });
+
+test('pieces join with a natural pause: a breath after a sentence, less after a comma, trimmed padding', async () => {
+  const { pieceGap, playPlan } = await import('../public/karaoke.js');
+  assert.equal(pieceGap(''), 0, 'nothing before the first piece');
+  const sentence = pieceGap('The build passed.');
+  const question = pieceGap('Want the list?');
+  const comma = pieceGap('and every page loads fine on my end,');
+  assert.ok(sentence >= 0.2 && sentence <= 0.35, String(sentence));
+  assert.ok(question >= sentence && comma < sentence && comma > 0);
+  assert.ok(pieceGap('The build passed.', 1.25) < sentence, 'faster voice, shorter pauses');
+  // Kokoro pads each clip with ~0.25s before and ~0.35s after: nearly all of it is cut.
+  const p = playPlan({ lead: 0.23, tail: 0.33 }, 2);
+  assert.equal(p.offset, 0.23);
+  assert.ok(Math.abs(p.length - (2 - 0.23 - 0.3)) < 1e-9);
+  assert.deepEqual(playPlan({ lead: 0, tail: 0 }, 1), { offset: 0, length: 1 });
+  assert.ok(playPlan({ lead: 5, tail: 5 }, 1).length > 0, 'never trims everything');
+});

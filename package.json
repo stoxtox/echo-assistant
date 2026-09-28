@@ -1,6 +1,6 @@
 {
   "name": "echo",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Echo: a voice assistant that runs Claude Code workers across your projects",
   "main": "index.js",
   "scripts": {
