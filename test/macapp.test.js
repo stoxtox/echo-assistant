@@ -39,14 +39,14 @@ fs.writeFileSync(
   path.join(echo, 'supervisor.js'),
   `const fs = require('node:fs');
 fs.appendFileSync(__dirname + '/starts', 'x');
-require('node:http').createServer((q, r) => r.end('{"ok":true}')).listen(Number(process.env.VOICEOPS_PORT), '127.0.0.1');
+require('node:http').createServer((q, r) => r.end('{"ok":true}')).listen(Number(process.env.ECHO_PORT), '127.0.0.1');
 `
 );
 const starts = () => (fs.existsSync(path.join(echo, 'starts')) ? fs.readFileSync(path.join(echo, 'starts'), 'utf8').length : 0);
 
 /** @param {number} port @param {string[]} [args] */
 const launch = async (port, args = []) => {
-  const env = { ...process.env, VOICEOPS_PORT: String(port), ECHO_NO_BROWSER: '1', ECHO_START_WAIT: '2' };
+  const env = { ...process.env, ECHO_PORT: String(port), ECHO_NO_BROWSER: '1', ECHO_START_WAIT: '2' };
   try {
     const r = await run('/bin/bash', [path.join(echo, 'scripts', 'launcher.sh'), ...args, echo], { env });
     return { code: 0, out: r.stdout + r.stderr };
@@ -111,15 +111,38 @@ test('the app asks for the microphone and speech, and ships its sources in the p
 const swiftTools = (() => {
   try {
     const dev = execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return fs.existsSync(path.join(dev, 'usr/bin/swiftc')) || fs.existsSync(path.join(dev, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'));
+    if (!fs.existsSync(path.join(dev, 'usr/bin/swiftc')) && !fs.existsSync(path.join(dev, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'))) return false;
+    // Installed but unusable (the Xcode license not accepted yet, after an Xcode update): skip.
+    execFileSync('/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-path'], { stdio: 'ignore', timeout: 20000 });
+    return true;
   } catch {
     return false;
   }
 })();
 
-test('the Swift sources compile', { skip: !swiftTools && 'no Swift build tools on this Mac' }, async () => {
+test('the Swift sources compile', { skip: !swiftTools && 'no usable Swift build tools on this Mac' }, async () => {
   const src = path.join(APP_DIR, 'macos', 'Sources');
   const files = fs.readdirSync(src).filter((f) => f.endsWith('.swift')).map((f) => path.join(src, f));
   const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
   await run('/usr/bin/xcrun', ['--sdk', 'macosx', 'swiftc', '-typecheck', '-swift-version', '5', '-target', `${arch}-apple-macos13.0`, ...files]);
+});
+
+// The pointer's arithmetic (macos/Sources/PointMath.swift): AX → AppKit coordinates on several
+// displays, capture pixels → points on Retina, no usable frame → nothing to point at, rows
+// scrolled out of a sidebar, and "wifi" matching System Settings' "Wi‑Fi" (U+2011).
+test('the pointer\'s coordinate conversion, visibility and label matching', { skip: !swiftTools && 'no usable Swift build tools on this Mac' }, async () => {
+  const out = fs.mkdtempSync(path.join(dirs.root, 'pointmath-'));
+  const bin = path.join(out, 'pointmath-tests');
+  await run('/usr/bin/xcrun', ['--sdk', 'macosx', 'swiftc', '-swift-version', '5', path.join(APP_DIR, 'macos', 'Sources', 'PointMath.swift'), path.join(APP_DIR, 'macos', 'Tests', 'main.swift'), '-o', bin]);
+  const r = await run(bin, []).catch((e) => e);
+  assert.equal(r.stdout.trim().split('\n').pop(), 'ok', String(r.stdout));
+});
+
+// The companion render harness (scripts/render-companion.sh) draws with the app's own code, so it
+// has to keep compiling against it: that's what the mockup comparison images come from.
+test('the companion render harness compiles with the app\'s drawing code', { skip: !swiftTools && 'no usable Swift build tools on this Mac' }, async () => {
+  const src = (f) => path.join(APP_DIR, 'macos', 'Sources', f);
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+  await run('/usr/bin/xcrun', ['--sdk', 'macosx', 'swiftc', '-typecheck', '-swift-version', '5', '-target', `${arch}-apple-macos13.0`,
+    src('PointMath.swift'), src('Companion.swift'), src('PillArt.swift'), src('Permissions.swift'), path.join(APP_DIR, 'macos', 'Tests', 'Render', 'main.swift')]);
 });

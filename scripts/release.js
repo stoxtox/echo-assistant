@@ -5,6 +5,7 @@
 //   options: --yes           don't stop to let you edit the changelog notes
 //            --no-git        don't commit the version bump or tag it (for trying it out)
 //            --data-dir DIR  your Echo data folder, for the privacy check's personal words
+//            --no-gate       skip the release gate (tests, type check, golden tasks); not for real releases
 //
 // Steps: the working tree must be clean -> bump the version (package.json and the lockfile) ->
 // add a CHANGELOG.md entry (your "Unreleased" notes, then the commit messages since the last tag)
@@ -23,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { APP_DIR, config } from '../lib/config.js';
 import { bumpVersion, addChangelogEntry, changelogSection, sha256File, checksumLine, zipName, checksumName, releaseRepo, ghStatus } from '../lib/release.js';
 import { buildPackage } from './package.js';
+import { spawnSync } from 'node:child_process';
 
 const git = (args, cwd = APP_DIR) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
@@ -187,7 +189,28 @@ function commitsSinceLastTag(appDir) {
  *   edit?: boolean, date?: string, build?: (opts: { out: string, dataDir: string, appDir: string, zipName: string }) => { ok: boolean, zipFile?: string },
  *   gh?: () => { authed: boolean, help: string[] } }} [opts]
  */
-export async function release({ kind = 'patch', appDir = APP_DIR, dataDir = config.dataDir, useGit = true, edit = true, date, build = buildPackage, gh = ghStatus } = {}) {
+/**
+ * The release gate (Stage 9): the tests and the type check in a clean environment (review-checks),
+ * and the golden tasks (npm run golden), all three runs of each. Anything failing, or a "done" that
+ * wasn't, blocks the release.
+ * @param {string} appDir
+ * @returns {{ ok: boolean, why?: string }}
+ */
+export function releaseGate(appDir) {
+  const run = (args) => spawnSync(process.execPath, args, { cwd: appDir, stdio: 'inherit' });
+  console.log('Release gate: tests and type check (review-checks)…');
+  if (run(['scripts/review-checks.js']).status !== 0) return { ok: false, why: 'the tests or the type check failed' };
+  console.log('Release gate: golden tasks, three runs each…');
+  if (run(['scripts/golden.js', '--dry', '--gate']).status !== 0) return { ok: false, why: 'a golden task failed or said done when it wasn\'t' };
+  return { ok: true };
+}
+
+/**
+ * @param {{ kind?: 'patch' | 'minor' | 'major' | 'current', appDir?: string, dataDir?: string, useGit?: boolean, edit?: boolean, date?: string,
+ *   build?: any, gh?: any, gate?: ((appDir: string) => { ok: boolean, why?: string }) | null }} [o]
+ *   gate: checks that must pass first (the command line uses releaseGate; --no-gate skips it)
+ */
+export async function release({ kind = 'patch', appDir = APP_DIR, dataDir = config.dataDir, useGit = true, edit = true, date, build = buildPackage, gh = ghStatus, gate = null } = {}) {
   if (!['patch', 'minor', 'major', 'current'].includes(kind)) throw new Error(`Say patch, minor, major or current (not "${kind}").`);
   const current = kind === 'current';
   const repo = releaseRepo(appDir);
@@ -195,6 +218,10 @@ export async function release({ kind = 'patch', appDir = APP_DIR, dataDir = conf
   if (useGit) {
     const dirty = git(['status', '--porcelain'], appDir);
     if (dirty) throw new Error(`Commit or put away these changes first, so the release is exactly what's committed:\n${dirty}`);
+  }
+  if (gate) {
+    const g = gate(appDir);
+    if (!g.ok) throw new Error(`The release gate failed: ${g.why}. Nothing was changed.`);
   }
   const pkgFile = path.join(appDir, 'package.json');
   const lockFile = path.join(appDir, 'package-lock.json');
@@ -287,6 +314,8 @@ export function parseReleaseArgs(argv) {
     dataDir: dataIdx >= 0 && argv[dataIdx + 1] ? path.resolve(argv[dataIdx + 1]) : undefined,
     useGit: !argv.includes('--no-git'),
     edit: !argv.includes('--yes'),
+    // The gate (tests, type check, golden tasks) runs unless --no-gate.
+    gate: argv.includes('--no-gate') ? null : releaseGate,
   };
 }
 

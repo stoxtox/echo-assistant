@@ -42,7 +42,7 @@ test('project folders: ~ is expanded, and only sensible places inside home are a
 });
 
 test('setup saves each answer; not a developer turns on beginner and safe mode; finish ends setup', () => {
-  const self = new SelfImprove(tasks(), { appDir: dirs.root });
+  const self = new SelfImprove(tasks(), { access: { allowed: true, reason: 'test dev copy' }, appDir: dirs.root });
   let r = saveOnboarding({ userName: '  Sam  ', interests: ['errands', 'documents', 'bogus'] }, { selfImprove: self, home });
   assert.equal(r.settings.userName, 'Sam');
   assert.deepEqual(r.settings.interests, ['errands', 'documents']);
@@ -94,7 +94,7 @@ test('in safe mode, "stop asking" grants only ever cover one task', () => {
 test('safe mode: self-improve stays locked until a PIN is set', () => {
   fs.rmSync(path.join(dirs.data, 'self', 'pin.json'), { force: true });
   saveSettings({ safeMode: true });
-  const self = new SelfImprove(tasks(), { appDir: dirs.root });
+  const self = new SelfImprove(tasks(), { access: { allowed: true, reason: 'test dev copy' }, appDir: dirs.root });
   assert.throws(() => self.requestUnlock('change the colors'), /locked until a PIN is set/);
   self.setPin('2580');
   assert.ok(self.requestUnlock('change the colors').code);

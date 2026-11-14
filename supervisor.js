@@ -2,6 +2,7 @@
 // after a self-update, and rolls back to the last good commit if that version fails.
 //
 //   npm start  ->  node supervisor.js  ->  node server.js
+import { withLegacyEnv } from './lib/legacy.js'; // first: VOICEOPS_* settings still work
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -9,14 +10,15 @@ import path from 'node:path';
 import { config, APP_DIR } from './lib/config.js';
 import { audit } from './lib/selfimprove.js';
 import { pendingUpdate, confirmUpdate, rollbackUpdate } from './lib/updater.js';
+import { writeJson } from './lib/atomic.js';
 
 export const RESTART_CODE = 75;
 // Overridable so the rollback path can be tested against a throwaway repo.
-const appDir = process.env.VOICEOPS_APP_DIR || APP_DIR;
+const appDir = process.env.ECHO_APP_DIR || APP_DIR;
 const selfDir = path.join(config.dataDir, 'self');
 const pendingFile = path.join(selfDir, 'pending-restart.json');
 const noticeFile = path.join(selfDir, 'rollback-notice.json');
-const HEALTH_TIMEOUT_MS = Number(process.env.VOICEOPS_HEALTH_TIMEOUT_MS || 30000);
+const HEALTH_TIMEOUT_MS = Number(process.env.ECHO_HEALTH_TIMEOUT_MS || 30000);
 
 let child = null;
 let stopping = false;
@@ -66,7 +68,7 @@ function start() {
   child = spawn(process.execPath, ['--env-file-if-exists=.env', 'server.js'], {
     cwd: appDir,
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-    env: { ...process.env, VOICEOPS_SUPERVISED: '1' },
+    env: withLegacyEnv({ ...process.env, ECHO_SUPERVISED: '1' }),
   });
   const me = child;
   const startedAt = Date.now();
@@ -158,7 +160,7 @@ async function rollback(pending, why) {
     // (or stashed) before merging, so lastGood includes them, and the change stays on its branch.
     execFileSync('git', ['reset', '--hard', pending.lastGood], { cwd: appDir });
     if (pending.depsChanged) execFileSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: appDir });
-    fs.writeFileSync(noticeFile, JSON.stringify({ ...pending, why, at: new Date().toISOString() }, null, 2));
+    writeJson(noticeFile, { ...pending, why, at: new Date().toISOString() }, { backup: false });
     audit('rolled_back', { from: pending.head, to: pending.lastGood, why, taskId: pending.taskId });
   } catch (e) {
     audit('rollback_failed', { error: e.message });
@@ -232,7 +234,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.join(APP_DIR, 'supervisor.js')) {
   fs.mkdirSync(selfDir, { recursive: true });
-  await waitPortFree(process.env.VOICEOPS_WAIT_PORT_FREE ? 60000 : 3000);
+  await waitPortFree(process.env.ECHO_WAIT_PORT_FREE ? 60000 : 3000);
   if (await portInUse(config.port)) {
     log(`port ${config.port} is already in use. Is Echo already running?`);
     process.exit(1);

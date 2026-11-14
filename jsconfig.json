@@ -6,10 +6,21 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "es2022",
-    "lib": ["es2023", "dom"],
+    "lib": [
+      "es2023",
+      "dom"
+    ],
     "strict": false,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true
   },
-  "include": ["server.js", "supervisor.js", "lib/**/*.js", "test/**/*.js"]
+  "include": [
+    "server.js",
+    "supervisor.js",
+    "lib/**/*.js",
+    "test/**/*.js"
+  ]
 }

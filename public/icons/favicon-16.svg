@@ -1,8 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <!-- 16px optical variant of the Echo mark: the "e" plus one echo arc, snapped to the pixel grid. -->
-  <rect width="16" height="16" rx="3.5" fill="#0E0D10"/>
-  <g fill="none" stroke="#FF7A59" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5.55 8H11.05A2.75 2.75 0 1 0 10.47 9.69"/>
-    <path d="M12.37 3.93A5.75 5.75 0 1 0 12.37 12.07" opacity=".8"/>
-  </g>
+  <!-- 16px optical variant of the Echo mark (Fade): three bars snapped to the pixel grid. -->
+  <defs>
+    <linearGradient id="answer" x1="3" y1="0" x2="8" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4780FF"/>
+      <stop offset=".33" stop-color="#A866FF"/>
+      <stop offset=".67" stop-color="#FF669E"/>
+      <stop offset="1" stop-color="#FFB866"/>
+    </linearGradient>
+  </defs>
+  <rect width="16" height="16" rx="3.5" fill="#0A0A0A"/>
+  <rect x="3" y="3" width="10" height="2.5" rx="1.25" fill="#F5F5F5"/>
+  <rect x="3" y="6.75" width="7.5" height="2.5" rx="1.25" fill="#8A8A8A"/>
+  <rect x="3" y="10.5" width="5" height="2.5" rx="1.25" fill="url(#answer)"/>
 </svg>

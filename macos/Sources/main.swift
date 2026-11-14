@@ -15,12 +15,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
   var webView: WKWebView!
   var statusItem: NSStatusItem!
   var hotKey: HotKey!
+  let pointer = PointerOverlay() // ScreenBridge.swift
+  let ptt = PushToTalk()
+  var screenPromptShownAt: Date?
+  /// The permissions checklist (Permissions.swift), over what macOS says (PushToTalk.swift).
+  lazy var permissionsWindow = PermissionsWindow(read: { [weak self] in
+    self?.permissionsChanged()
+    return Permissions.model()
+  }, act: { id, allow in Permissions.act(id, allow: allow) })
   var serverUp = false
   var starting = false
   var pageLoaded = false // Echo's own page (not the loading screen) is showing
   var listening = false
   var handsFree = false
+  /// The one listening state, as the page reports it: "listening", "resting" or "off" ("" until it has).
+  var listenMode = ""
   var healthTimer: Timer?
+  /// The top of the menu bar menu, and the timer that keeps its line true while the menu is open.
+  let menuHeader = MenuHeaderView()
+  var menuTimer: Timer?
   var snapshotTaken = false
 
   // MARK: launch
@@ -29,11 +42,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     buildMainMenu()
     buildWindow()
     buildStatusItem()
+    setUpLifecycle()
     hotKey = HotKey { [weak self] in self?.summon() }
-    applyHotKey(Prefs.hotKey, warn: false)
+    applyHotKey(Prefs.hotKey)
+    FrontApp.startTracking()
+    setUpNativeMic() // NativeMic.swift
+    setUpPushToTalk()
+    BodyLink.shared.timeline("perm.state", Permissions.status()) // once, for the timeline: which permissions Echo started with
+    Permissions.noteChanges() // where it starts: only changes after this are noted
     showWindow()
+    // The checklist comes up by itself the first time, and whenever Echo can't work yet.
+    if AppConfig.snapshotPath == nil, PermMath.showAtLaunch(firstRun: !Permissions.shown, Permissions.model()) { showPermissions() }
     connect()
     healthTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshHealth() }
+    // The first look after launch used to be the slow one: wake the screen reader once things settle.
+    // (And it went cold again after hours idle or a sleep: it is kept awake from here on.)
+    ScreenLook.keepWarm()
+  }
+
+  func applicationDidBecomeActive(_ note: Notification) {
+    retryPushToTalk()
+    NativeMic.shared.recheck() // the mic's permission may have changed in System Settings meanwhile
+    reportPermissions()
+    Permissions.noteChanges()
+    permissionsWindow.refresh()
+    CaptionBar.shared.refresh()
+  }
+
+  // Echo's window went behind other apps: the caption bar may be needed (Caption.swift).
+  func applicationDidResignActive(_ note: Notification) {
+    CaptionBar.shared.refresh()
   }
 
   func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -43,10 +81,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
   func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
+  /// Quit means quit: Echo's server stops too (Server.swift), unless you chose "Keep Working in
+  /// the Background After I Quit". With tasks running it asks once what to do with them.
   func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
-    guard !Prefs.keepServerRunning, server.startedByLauncher else { return .terminateNow }
-    server.stop { _ in app.reply(toApplicationShouldTerminate: true) }
+    guard !Prefs.keepWorkingAfterQuit else { return .terminateNow }
+    // The launcher may be half way through starting the server: it is stopped first, so nothing
+    // starts after the app has gone, and whatever it already started is stopped like any other.
+    server.stopStarting { [weak self] in self?.askServerToStop(app) }
     return .terminateLater
+  }
+
+  private func askServerToStop(_ app: NSApplication) {
+    server.askToStop(ifIdle: true) { [weak self] answer in
+      guard let self else { return app.reply(toApplicationShouldTerminate: true) }
+      switch answer {
+      case .refused:
+        // It is running but wouldn't say whether tasks are: ask, rather than stop them unasked.
+        switch self.askAboutRefusal() {
+        case .alertFirstButtonReturn: self.server.finishStopping { app.reply(toApplicationShouldTerminate: true) }
+        case .alertSecondButtonReturn: app.reply(toApplicationShouldTerminate: true) // the server stays
+        default: app.reply(toApplicationShouldTerminate: false)
+        }
+      case .working(let n):
+        switch self.askAboutRunningTasks(n) {
+        case .alertFirstButtonReturn: self.server.stop { app.reply(toApplicationShouldTerminate: true) }
+        case .alertSecondButtonReturn: app.reply(toApplicationShouldTerminate: true) // the server stays
+        default: app.reply(toApplicationShouldTerminate: false)
+        }
+      case .stopping, .unreachable:
+        // Stopping; or not answering, or an older Echo without the shutdown request: either way,
+        // make sure what's ours has stopped.
+        self.server.finishStopping { app.reply(toApplicationShouldTerminate: true) }
+      }
+    }
+  }
+
+  /// The server is there but refused the app's request to stop: quit and stop it anyway (its
+  /// tasks pause), leave it running, or don't quit.
+  func askAboutRefusal() -> NSApplication.ModalResponse {
+    NSApp.activate(ignoringOtherApps: true)
+    let a = NSAlert()
+    a.messageText = ProcessMath.refusedQuestion
+    a.informativeText = ProcessMath.refusedDetail
+    a.addButton(withTitle: "Quit and Stop It")
+    a.addButton(withTitle: "Leave It Running")
+    a.addButton(withTitle: "Cancel")
+    return a.runModal()
+  }
+
+  /// "Echo is still working on N tasks": quit and pause them (they resume next time), leave the
+  /// server working in the background this once, or don't quit.
+  func askAboutRunningTasks(_ n: Int) -> NSApplication.ModalResponse {
+    NSApp.activate(ignoringOtherApps: true)
+    let a = NSAlert()
+    a.messageText = ProcessMath.quitQuestion(tasks: n)
+    a.informativeText = "Paused tasks pick up where they left off the next time you open Echo."
+    a.addButton(withTitle: "Quit and Pause Them")
+    a.addButton(withTitle: "Keep Working in the Background")
+    a.addButton(withTitle: "Cancel")
+    return a.runModal()
+  }
+
+  /// Nothing of Echo's stays on screen after the app has gone.
+  func applicationWillTerminate(_ note: Notification) {
+    ComputerDriver.shared.end()
+    CaptionBar.shared.reset()
+    pointer.letGo()
+    pointer.hide(animated: false)
+    EdgeGlow.shared.hideAll()
+    StatusChip.shared.hideNow()
+  }
+
+  /// The caption pill's buttons, and what resets or re-places Echo's overlays: the server going
+  /// away, the screens changing, the Mac waking.
+  func setUpLifecycle() {
+    wireCaption() // Driver.swift
+    // The app's line to the server dropped (it stopped or is restarting): a run can't go on, and
+    // whatever the pill showed is stale. The page says what's still true once it's back. A reply
+    // you were typing is yours, not the server's: it stays.
+    BodyLink.shared.onDrop = {
+      // No release can reach a waiting light now: it is let go.
+      ComputerDriver.shared.pointer?.letGo()
+      ComputerDriver.shared.end()
+      CaptionBar.shared.reset(keepDraft: true)
+    }
+    NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+      FrameClock.shared.rebuild()
+      CaptionBar.shared.screensChanged()
+      EdgeGlow.shared.screensChanged()
+      StatusChip.shared.screensChanged()
+      self?.pointer.screensChanged()
+    }
+    NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+      FrameClock.shared.rebuild()
+      CaptionBar.shared.refresh()
+    }
   }
 
   // MARK: connecting to the server
@@ -77,6 +206,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
   func loadEcho() {
     setServerUp(true)
+    // The app's own line to the server (BodyLink.swift): requests reach it even while the page
+    // reloads; the same handlers the page used answer them.
+    BodyLink.shared.onRequest = { [weak self] body in
+      guard let self else { return }
+      if !self.handleComputerMessage("screen", body) { _ = self.handleScreenMessage("screen", body) }
+    }
+    BodyLink.shared.start(port: AppConfig.port, echoDir: server.echoDir)
     webView.load(URLRequest(url: AppConfig.baseURL))
   }
 
@@ -112,6 +248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     webView.setValue(false, forKey: "drawsBackground")
     webView.underPageBackgroundColor = .echoBackground
     if #available(macOS 13.3, *) { webView.isInspectable = true }
+    // Keep the page awake behind other windows, so push-to-talk and "Hey Echo" can still hear you.
+    if webView.responds(to: NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")) {
+      webView.setValue(false, forKey: "windowOcclusionDetectionEnabled")
+    }
 
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1180, height: 800),
@@ -144,7 +284,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
   }
 
-  /// Closing the window keeps Echo in the menu bar; Quit ends the app.
+  /// Echo's window hidden, covered or back: the caption bar shows only when it's needed.
+  func windowDidChangeOcclusionState(_ note: Notification) {
+    CaptionBar.shared.refresh()
+  }
+
+  /// Closing the window keeps Echo in the menu bar (its icon there says she's running, with Open
+  /// Echo and Quit Echo); Quit ends the app and her server.
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     sender.orderOut(nil)
     return false
@@ -154,6 +300,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
   func showStatusPage(title: String, detail: String, retry: Bool = false) {
     pageLoaded = false
+    CaptionBar.shared.reset() // the page that fed the pill is being replaced
+    NativeMic.shared.pageGone() // and nobody is there to take a sentence
     webView.loadHTMLString(StatusPage.html(title: title, detail: detail, retry: retry, busy: !retry), baseURL: nil)
   }
 
@@ -161,12 +309,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
   func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
     guard let body = message.body as? [String: Any] else { return }
+    if let type = body["type"] as? String, handleComputerMessage(type, body) { return } // Driver.swift
+    if let type = body["type"] as? String, handleScreenMessage(type, body) { return }
+    if let type = body["type"] as? String, handleNativeMicMessage(type, body) { return }
     switch body["type"] as? String {
     case "state":
       listening = body["listening"] as? Bool ?? false
       handsFree = body["handsFree"] as? Bool ?? false
+      let mode = body["listenMode"] as? String ?? ""
+      if mode != listenMode { listenMode = mode; updateStatusIcon(); pointer.sleepy = mode == "resting" }
     case "retry":
       connect()
+    case "showPermissions":
+      showPermissions() // the page's own permission buttons open the checklist
+    // The app's own options live in the page's Settings: it asks for them, and sets them.
+    case "appPrefs":
+      reportAppPrefs()
+    case "setAppPref":
+      setAppPrefs(body)
+    // Echo was asked to show something that lives in its own window (the Sky): it comes forward.
+    case "showWindow":
+      showWindow()
+    // Nothing was said while drawing: the box opens at what was circled. Or Echo is done with it.
+    case "drawBox":
+      DrawLight.shared.offerBox()
+    case "drawClear":
+      DrawLight.shared.clear()
+    // Echo was asked to keep a line on screen.
+    case "pinNote":
+      if let text = body["text"] as? String { PinnedNotes.shared.add(text) }
+    case "clearPins":
+      PinnedNotes.shared.clearAll()
+    // Echo is keeping an eye on a window, or has stopped: its small light goes there, or leaves.
+    case "watchLight":
+      let id = body["id"] as? String ?? "", app = body["app"] as? String ?? ""
+      if body["on"] as? Bool ?? false { WatchLights.shared.add(id: id, app: app) }
+      else { WatchLights.shared.remove(id: id, done: body["done"] as? Bool ?? false) }
     case "openLog":
       if let dir = server.echoDir { NSWorkspace.shared.open(dir.appendingPathComponent("logs/echo-launcher.log")) }
     default:
@@ -218,6 +396,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     return nil
   }
 
+  /// A new page is taking over the web view (Echo's page loading or reloading, or the status
+  /// page): whatever the old one told the pill is forgotten; the new one says what's true.
+  /// The mic is disarmed too: its sentence would go to a page that isn't there. The new page says
+  /// what to listen for once it has loaded (public/app.js syncNativeMic).
+  func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+    CaptionBar.shared.reset()
+    NativeMic.shared.pageGone()
+  }
+
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
     guard isEcho(webView.url) else { return }
     pageLoaded = true
@@ -233,6 +420,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
   }
 
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    pageLoaded = false
+    CaptionBar.shared.reset() // the page died: nobody is left to take the pill down
+    NativeMic.shared.pageGone() // or to take a sentence from the mic
     connect()
   }
 
@@ -297,20 +487,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     let appMenu = NSMenu()
     appMenu.addItem(item("About Echo", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), target: NSApp))
-    appMenu.addItem(item("Check for Updates…", #selector(checkForUpdates), ""))
     appMenu.addItem(.separator())
-    appMenu.addItem(item("Keep Echo Running After Quit", #selector(toggleKeepRunning)))
-    appMenu.addItem(item("Open at Login", #selector(toggleOpenAtLogin)))
-    let shortcut = NSMenuItem(title: "Summon Shortcut", action: nil, keyEquivalent: "")
-    shortcut.submenu = hotKeyMenu()
-    appMenu.addItem(shortcut)
+    appMenu.addItem(item("Settings…", #selector(openSettings), ","))
     appMenu.addItem(.separator())
     appMenu.addItem(item("Hide Echo", #selector(NSApplication.hide(_:)), "h", target: NSApp))
     appMenu.addItem(item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option], target: NSApp))
     appMenu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:)), target: NSApp))
     appMenu.addItem(.separator())
     appMenu.addItem(item("Quit Echo", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
-    appMenu.delegate = self
     main.addItem(withTitle: "Echo", action: nil, keyEquivalent: "").submenu = appMenu
 
     // Without an Edit menu, Copy and Paste don't work in the page.
@@ -347,20 +531,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     NSApp.mainMenu = main
   }
 
-  func hotKeyMenu() -> NSMenu {
-    let m = NSMenu()
-    let off = item("Off", #selector(chooseHotKey(_:)))
-    off.representedObject = "off"
-    m.addItem(off)
-    for p in HotKey.presets {
-      let i = item(p.title, #selector(chooseHotKey(_:)))
-      i.representedObject = p.id
-      m.addItem(i)
-    }
-    m.delegate = self
-    return m
-  }
-
   func buildStatusItem() {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     statusItem.button?.image = EchoMark.menuBarImage(dimmed: true)
@@ -371,56 +541,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
   }
 
   func updateStatusIcon() {
-    statusItem?.button?.image = EchoMark.menuBarImage(dimmed: !serverUp)
+    statusItem?.button?.image = EchoMark.menuBarImage(dimmed: !serverUp, mode: listenMode)
     statusItem?.button?.toolTip = serverUp ? "Echo is running" : starting ? "Echo is starting…" : "Echo isn't running"
   }
 
   func menuNeedsUpdate(_ menu: NSMenu) {
-    if menu === statusItem.menu { return fillStatusMenu(menu) }
-    for i in menu.items {
-      switch i.action {
-      case #selector(toggleKeepRunning): i.state = Prefs.keepServerRunning ? .on : .off
-      case #selector(toggleOpenAtLogin): i.state = Prefs.openAtLogin ? .on : .off
-      case #selector(chooseHotKey(_:)): i.state = (i.representedObject as? String) == Prefs.hotKey ? .on : .off
-      default: break
-      }
-    }
+    if menu === statusItem.menu { fillStatusMenu(menu) }
+  }
+
+  /// The header's line is live: it is looked at again twice a second while the menu is open (a
+  /// timer in the menu's own run loop mode; nothing runs while it is closed).
+  func menuWillOpen(_ menu: NSMenu) {
+    guard menu === statusItem.menu else { return }
+    menuTimer?.invalidate()
+    let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateMenuHeader() }
+    RunLoop.main.add(t, forMode: .common)
+    menuTimer = t
+  }
+
+  func menuDidClose(_ menu: NSMenu) {
+    guard menu === statusItem.menu else { return }
+    menuTimer?.invalidate()
+    menuTimer = nil
+  }
+
+  /// The name of a required permission that isn't allowed ("Microphone"), or nil.
+  var missingPermission: String? { Permissions.model().missing(required: true).first?.name }
+
+  func updateMenuHeader() {
+    let missing = missingPermission, work = CaptionBar.shared.progress
+    let working = work.working || ComputerDriver.shared.driving
+    let voice = pointer.voice
+    let line = StatusMenuMath.statusLine(
+      missing: missing, serverUp: serverUp, starting: starting, working: working, app: ComputerDriver.shared.appName,
+      step: work.step, steps: work.steps, speaking: voice == "speaking", listening: listening || voice == "listening", handsFree: handsFree, mode: listenMode)
+    menuHeader.show(line: line, voice: serverUp ? voice : "idle", working: serverUp && working, needsYou: missing != nil)
   }
 
   func fillStatusMenu(_ menu: NSMenu) {
     menu.removeAllItems()
-    let status = NSMenuItem(
-      title: serverUp ? "Echo is running" : starting ? "Echo is starting…" : "Echo isn't running",
-      action: nil, keyEquivalent: "")
-    status.isEnabled = false
-    menu.addItem(status)
-    menu.addItem(item("Show Echo", #selector(showEcho), ""))
-    let updates = item("Check for Updates…", #selector(checkForUpdates), "")
-    updates.isEnabled = pageLoaded
-    menu.addItem(updates)
+    updateMenuHeader()
+    let header = NSMenuItem()
+    header.view = menuHeader
+    header.isEnabled = false
+    menu.addItem(header)
+    // Only while Echo can't work yet: the way to the checklist, right under what's wrong.
+    if missingPermission != nil { menu.addItem(item("Fix Permissions…", #selector(showPermissions), "")) }
     menu.addItem(.separator())
+
     let listen = item(listening ? "Stop Listening" : "Start Listening", #selector(toggleListening), "")
     listen.isEnabled = pageLoaded
+    // Push-to-talk is modifier keys only, so it can't be a key equivalent (and must not be one:
+    // the menu would take the keys). It is shown as a badge instead, where macOS has them.
+    let chord = ptt.isActive ? StatusMenuMath.pttHint(Prefs.pttHotkey) : ""
+    if #available(macOS 14, *), !chord.isEmpty { listen.badge = NSMenuItemBadge(string: chord) }
     menu.addItem(listen)
-    let hf = item("Hands-free", #selector(toggleHandsFree), "")
-    hf.state = handsFree ? .on : .off
-    hf.isEnabled = pageLoaded
-    menu.addItem(hf)
-    menu.addItem(.separator())
-    if serverUp {
-      if server.startedByLauncher { menu.addItem(item("Stop Echo Server", #selector(stopServer), "")) }
-    } else if !starting {
-      menu.addItem(item("Start Echo Server", #selector(startServer), ""))
+    // The one listening state: three choices, one ticked. (Double-tapping the key switches the first two.)
+    for (title, mode) in [("Listening", "listening"), ("Resting: its name only", "resting"), ("Mic Off", "off")] {
+      let m = item(title, #selector(pickListenMode(_:)), "")
+      m.representedObject = mode
+      m.state = listenMode == mode ? .on : .off
+      m.isEnabled = pageLoaded
+      menu.addItem(m)
     }
-    let keep = item("Keep Echo Running After Quit", #selector(toggleKeepRunning), "")
-    keep.state = Prefs.keepServerRunning ? .on : .off
-    menu.addItem(keep)
-    let login = item("Open at Login", #selector(toggleOpenAtLogin), "")
-    login.state = Prefs.openAtLogin ? .on : .off
-    menu.addItem(login)
-    let shortcut = NSMenuItem(title: "Summon Shortcut", action: nil, keyEquivalent: "")
-    shortcut.submenu = hotKeyMenu()
-    menu.addItem(shortcut)
+    if PinnedNotes.shared.count > 0 {
+      menu.addItem(item("Clear Pinned Notes", #selector(clearPinnedNotes), ""))
+    }
+    // The Caption setting (Settings, in the page): the island at the bottom of the screen.
+    let caption = item("Show Caption", #selector(toggleCaption), "")
+    caption.state = CaptionBar.shared.allowed ? .on : .off
+    caption.isEnabled = pageLoaded
+    menu.addItem(caption)
+    menu.addItem(.separator())
+
+    // The summon shortcut as a hint. A key equivalent in this menu only counts while the menu is
+    // open; the shortcut itself is HotKey's, from anywhere.
+    let open = item("Open Echo", #selector(showEcho), "")
+    if let k = StatusMenuMath.summonKey(Prefs.hotKey) {
+      var mods: NSEvent.ModifierFlags = []
+      if k.mods.contains("ctrl") { mods.insert(.control) }
+      if k.mods.contains("opt") { mods.insert(.option) }
+      if k.mods.contains("shift") { mods.insert(.shift) }
+      if k.mods.contains("cmd") { mods.insert(.command) }
+      open.keyEquivalent = k.key
+      open.keyEquivalentModifierMask = mods
+    }
+    menu.addItem(open)
+    let settings = item("Settings…", #selector(openSettings), ",")
+    settings.isEnabled = pageLoaded
+    menu.addItem(settings)
+    if !serverUp && !starting { menu.addItem(item("Start Echo Server", #selector(startServer), "")) }
     menu.addItem(.separator())
     menu.addItem(item("Quit Echo", #selector(NSApplication.terminate(_:)), "q", target: NSApp))
   }
@@ -428,10 +638,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
   // MARK: actions
 
   @objc func showEcho() { showWindow() }
-  // Opens Settings → Updates in the page and checks GitHub for a newer release.
-  @objc func checkForUpdates() {
+  /// Show Caption: the island goes or comes back at once, and the page saves the Caption setting
+  /// (the server tells every open page, so Settings shows the same).
+  @objc func toggleCaption() {
+    let on = !CaptionBar.shared.allowed
+    CaptionBar.shared.setAllowed(on)
+    js("fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ captionBar: \(on) }) })")
+  }
+  /// Settings… (⌘,): Echo's window, on Settings. The page's own bridge call when it has one;
+  /// otherwise the ⌘, the page already listens for.
+  @objc func openSettings() {
     showWindow()
-    js("window.echoNative?.checkForUpdates()")
+    js("window.echoNative?.openSettings ? window.echoNative.openSettings() : document.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true }))")
+  }
+  @objc func showPermissions() {
+    Permissions.shown = true
+    permissionsWindow.show()
+  }
+  /// A permission changed while the checklist was open (it looks every 2 seconds): noted once on
+  /// the timeline, and whatever was waiting for it (push-to-talk, the mic, the page) hears now.
+  func permissionsChanged() {
+    guard Permissions.noteChanges() else { return }
+    retryPushToTalk()
+    NativeMic.shared.recheck()
+    reportPermissions()
   }
   @objc func reload() { if pageLoaded { webView.reload() } else { connect() } }
   @objc func zoomReset() { webView.pageZoom = 1 }
@@ -440,7 +670,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
   @objc func openInBrowser() { openOutside(AppConfig.baseURL) }
 
   @objc func toggleListening() {
-    showWindow() // the microphone needs the page in front
+    // The microphone needs the page in front, except while Echo drives: then it already listens
+    // in the background, and the app she's working in keeps the focus.
+    if !ComputerDriver.shared.driving { showWindow() }
     js("window.echoNative?.toggleListening()")
   }
 
@@ -448,44 +680,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     js("window.echoNative?.setHandsFree(\(!handsFree))")
   }
 
-  @objc func toggleKeepRunning() { Prefs.keepServerRunning.toggle() }
+  @objc func clearPinnedNotes() { PinnedNotes.shared.clearAll() }
 
-  @objc func toggleOpenAtLogin() {
-    do {
-      try Prefs.setOpenAtLogin(!Prefs.openAtLogin)
-    } catch {
-      alert("Couldn't change Open at Login", error.localizedDescription
-        + "\n\nYou can also add Echo in System Settings → General → Login Items.")
+  @objc func pickListenMode(_ sender: NSMenuItem) {
+    guard let mode = sender.representedObject as? String, ["listening", "resting", "off"].contains(mode) else { return }
+    js("window.echoNative?.setListenMode('\(mode)', 'menu')")
+  }
+
+  /// The screen locked or unlocked: the mic goes off while it is locked, and comes back resting.
+  @objc func screenLocked() { js("window.echoNative?.screenLocked(true)") }
+  @objc func screenUnlocked() { js("window.echoNative?.screenLocked(false)") }
+
+  // MARK: the app's own options, set from the page's Settings
+
+  /// Tells the page what they are now: window.echoNative.appPrefs({ keepWorkingAfterQuit,
+  /// openAtLogin, hotKey, hotKeys: [{ id, title }] }). `error` is there when a change didn't take.
+  func reportAppPrefs(error: String? = nil) {
+    var prefs: [String: Any] = [
+      "keepWorkingAfterQuit": Prefs.keepWorkingAfterQuit,
+      "openAtLogin": Prefs.openAtLogin,
+      "hotKey": HotKey.presets.contains { $0.id == Prefs.hotKey } ? Prefs.hotKey : "off",
+      "hotKeys": [["id": "off", "title": "Off"]] + HotKey.presets.map { ["id": $0.id, "title": $0.title] },
+    ]
+    if let error { prefs["error"] = error }
+    callPage("appPrefs", prefs)
+  }
+
+  /// { type: "setAppPref", keepWorkingAfterQuit?, openAtLogin?, hotKey? }: each one given is set,
+  /// then the page is told what is true now (a change macOS refused shows as unchanged, with why).
+  func setAppPrefs(_ body: [String: Any]) {
+    var problem: String?
+    if let v = body["keepWorkingAfterQuit"] as? Bool { Prefs.keepWorkingAfterQuit = v }
+    if let v = body["openAtLogin"] as? Bool, v != Prefs.openAtLogin {
+      do {
+        try Prefs.setOpenAtLogin(v)
+      } catch {
+        problem = "Couldn't change Open at Login: \(error.localizedDescription) You can also add Echo in System Settings, General, Login Items."
+      }
     }
+    if let v = body["hotKey"] as? String, v == "off" || HotKey.presets.contains(where: { $0.id == v }) {
+      if !applyHotKey(v) { problem = "Another app already uses that shortcut. Pick a different one." }
+    }
+    reportAppPrefs(error: problem)
   }
 
-  @objc func chooseHotKey(_ sender: NSMenuItem) {
-    applyHotKey(sender.representedObject as? String ?? "off", warn: true)
-  }
-
-  func applyHotKey(_ id: String, warn: Bool) {
+  /// Registers the summon shortcut and remembers it. False: another app already owns it.
+  @discardableResult
+  func applyHotKey(_ id: String) -> Bool {
     Prefs.hotKey = id
-    if !hotKey.apply(id) && warn {
-      alert("That shortcut is taken", "Another app already uses it. Pick a different one from the Summon Shortcut menu.")
-    }
+    return hotKey.apply(id)
   }
 
   @objc func startServer() { connect() }
-
-  @objc func stopServer() {
-    server.stop { [weak self] message in
-      guard let self else { return }
-      self.refreshHealth()
-      self.showStatusPage(title: "Echo is stopped", detail: message.isEmpty ? "" : message, retry: true)
-    }
-  }
-
-  func alert(_ title: String, _ text: String) {
-    let a = NSAlert()
-    a.messageText = title
-    a.informativeText = text
-    a.runModal()
-  }
 
   // MARK: testing aid (--snapshot PATH, or ECHO_APP_DEBUG=1)
 

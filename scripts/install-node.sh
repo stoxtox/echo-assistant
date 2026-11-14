@@ -7,7 +7,7 @@
 # It downloads the official Node.js LTS build for this Mac (arm64 or x64) from nodejs.org,
 # checks it against the release's SHASUMS256.txt, and unpacks it into ~/.echo/node. Nothing
 # outside that folder changes, and no password is needed. Safe to run again: an installed
-# Node.js 20 or newer is kept. Uses only tools every Mac has (curl, shasum, tar, awk).
+# Node.js 22.18 or newer is kept (lib/nodeversion.js MIN_NODE). Uses only tools every Mac has (curl, shasum, tar, awk).
 #
 # The last line of output is the path of the node binary. Settings, mostly for tests:
 #   ECHO_NODE_DIR      where Node.js goes (default ~/.echo/node)
@@ -20,7 +20,7 @@ set -eo pipefail
 NODE_DIR="${ECHO_NODE_DIR:-$HOME/.echo/node}"
 DIST="${ECHO_NODE_DIST:-https://nodejs.org/dist}"
 DIST="${DIST%/}"
-MIN_MAJOR=20
+MIN_NODE=22018 # 22.18, as major * 1000 + minor
 CHECK=0
 case "$1" in
   --check) CHECK=1 ;;
@@ -32,10 +32,10 @@ esac
 die() { echo "$*" >&2; exit 1; }
 
 usable() {
-  local major
+  local v
   [ -x "$1" ] || return 1
-  major="$("$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null)" || return 1
-  [ -n "$major" ] && [ "$major" -ge "$MIN_MAJOR" ] 2>/dev/null
+  v="$("$1" -p 'const [a, b] = process.versions.node.split(".").map(Number); a * 1000 + b' 2>/dev/null)" || return 1
+  [ -n "$v" ] && [ "$v" -ge "$MIN_NODE" ] 2>/dev/null
 }
 
 if usable "$NODE_DIR/bin/node"; then
@@ -65,8 +65,8 @@ if [ -z "$version" ]; then
   [ -n "$version" ] || die "nodejs.org didn't list a long-term-support Node.js for this Mac."
 fi
 case "$version" in v*) ;; *) version="v$version" ;; esac
-major="${version#v}"; major="${major%%.*}"
-[ "$major" -ge "$MIN_MAJOR" ] 2>/dev/null || die "Node.js $version is too old for Echo (it needs $MIN_MAJOR or newer)."
+rest="${version#v}"; major="${rest%%.*}"; rest="${rest#*.}"; minor="${rest%%.*}"
+[ "$((major * 1000 + minor))" -ge "$MIN_NODE" ] 2>/dev/null || die "Node.js $version is too old for Echo (it needs 22.18 or newer)."
 
 name="node-$version-darwin-$arch"
 file="$name.tar.gz"

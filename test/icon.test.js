@@ -6,8 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('..', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a folder name with a space would stay "%20".
+const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (f) => fs.readFileSync(path.join(root, f));
 
 /** Width, height and colour type from a PNG's IHDR chunk. */

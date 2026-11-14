@@ -1,7 +1,5 @@
 # Echo
 
-*(The project folder is still named `VoiceOps` for now.)*
-
 A voice assistant for all your projects and everyday errands. You talk to it, and it runs Claude Code workers in the background (coding in your project folders, research in a web-enabled workspace) while it keeps talking to you. It can even improve its own code, safely.
 
 ```
@@ -30,7 +28,7 @@ It uses your existing Claude Code login, so you don't need an API key.
 - **ElevenLabs** (premium): copy `.env.example` to `.env`, add `ELEVENLABS_API_KEY`, restart, then pick it under **Voice & vibe**.
 - **Browser**: the basic built-in voice, used as a fallback.
 - Replies are spoken **sentence by sentence while the assistant is still writing**, and a quick "one sec" filler plays the moment it starts looking something up, so there's no dead air.
-- **Voice & vibe** panel: assistant name, your name, personality (Buddy, Hype, Chill, Witty, Pro), voice, speed, sound effects, and your self-improve PIN.
+- **Voice & vibe** panel: assistant name, your name, personality (Friendly, Balanced, Professional), voice, speed, sound effects, and your self-improve PIN.
 - Press <kbd>Space</kbd> while it's talking to cut in.
 - Echo's voice is a drop of liquid sunset light behind glass (WebGL, with a Canvas2D fallback). It breathes softly when idle, ripples in cooler dusk tones with your mic while listening, flows gently while thinking, and moves with her voice while she speaks: loudness drives motion and size, pitch shifts the colour between deep rose, coral, tangerine and gold. States morph into each other, it pauses in background tabs, and with reduced motion it only pulses gently.
 - **Ambient piano:** the note button in the header plays gentle, generative piano (never the same twice) while workers run. Pick a mood (Upbeat & professional, Mellow, 90s feel, Deep focus) from its menu. It ducks whenever Echo speaks or listens, and remembers your choice.
@@ -41,14 +39,14 @@ Tuned for English with an Indian accent, and **locked to English**: every engine
 
 | Engine | Cost | Notes |
 |---|---|---|
-| **Local Whisper** (default via *Auto*) | Free, private, offline | whisper.cpp on the Mac's GPU: large-v3-turbo, with the silence squeezed out of each clip and Whisper's silence phrases ("Thank you", "you") dropped. large-v3 only when chosen with `VOICEOPS_WHISPER_MODEL` (it did worse on real speech: docs/speech-recognition.md). Always English: started with `-l en` and every request sends `language=en`, no auto-detect, no translation. Setup: `npm run setup:whisper`. |
+| **Local Whisper** (default via *Auto*) | Free, private, offline | whisper.cpp on the Mac's GPU: large-v3-turbo, with the silence squeezed out of each clip and Whisper's silence phrases ("Thank you", "you") dropped. large-v3 only when chosen with `ECHO_WHISPER_MODEL` (it did worse on real speech: docs/speech-recognition.md). Always English: started with `-l en` and every request sends `language=en`, no auto-detect, no translation. Setup: `npm run setup:whisper`. |
 | **Deepgram Nova-3** | Paid per minute of audio | Cloud; uses your vocabulary as *keyterms*; gets the language setting (`en-IN`, `en-US` or `en`). Add `DEEPGRAM_API_KEY` to `.env` and restart. |
 | **Browser** | Free | Chrome's built-in engine, set to `en-IN` or `en-US` (`browserLang` from `GET /api/stt`; `en` means `en-US`). Fallback; also shows your words live while you talk. |
 
 What happens to each sentence:
 1. **Vocabulary**: your project names, confirmed aliases, the words list you edit in the panel (Maya, Hoboken, AMC, bibimbap, …) and learned fixes go to Whisper as its initial prompt, or to Deepgram as keyterms.
-2. **Instant fixes**: learned mishearings that aren't normal English ("hoe broken" → Hoboken, "they eat 31" → 8:30) are replaced right away. Everyday words like "football" are only fixed when the context fits.
-3. **Smart correction**: a fast model (Claude Haiku, about 1s and about $0.003 per sentence) fixes remaining mishearings using the vocabulary, your projects and the last few lines of conversation. Fixes that don't sound like what was said are marked *unsure*.
+2. **As heard**: nothing in the sentence is rewritten. Letters you spell out are joined into the word ("T-A-V-I-S-H" is Tavish).
+3. **Names as hints**: a learned mishearing ("hoe broken" for Hoboken), or a word that sounds like one of your projects, contacts or words, goes to Echo as a note ("may be Hoboken") that it weighs with the conversation in view (`hearAsSaid` in `lib/correct.js`). No model is called for this.
 4. **Confirm, don't guess**: low-confidence words, and loose guesses that matter (a project, time, name or amount), get a quick "Budget2, right?" before Echo acts. They're underlined in the chat.
 5. **Learning**: say "no, I meant bibimbap" and Echo saves the fix (`learn_correction`), so it works from then on. You can remove learned fixes in the panel.
 
@@ -58,7 +56,7 @@ Raw and corrected text are logged side by side in `data/stt-log.jsonl` and in th
 
 ## Using it
 
-- **Talk:** hold <kbd>Space</kbd> (or click the orb), speak, then release. Turn on **Hands-free** to talk without pressing anything.
+- **Talk:** hold <kbd>Space</kbd> (or click the orb), speak, then release. Turn on **Hands-free** to talk without pressing anything. In the Mac app, hold **Control + Option** from any app to talk (Settings → Screen changes the chord).
 - **Hush:** <kbd>Esc</kbd> stops it talking.
 - **Type:** the text box works too.
 - Things to say:
@@ -71,6 +69,11 @@ Raw and corrected text are logged side by side in `data/stt-log.jsonl` and in th
   - "When I say football I mean Foodbowl." / "Hide the untitled folder."
   - "Open a terminal on task 1."
   - "Improve yourself: say goodbye when I close the app." *(self-improve mode, below)*
+  - "What's this error?" / "Where's the share button?" / "Fix the error on my screen." *(screen awareness, below)*
+
+### Screen awareness and the pointer
+
+Echo looks at your screen **only when you ask** about it. The Mac app captures one frame, reads the text on your Mac (Apple Vision), blacks out password fields, API keys, tokens and card numbers, and hands the text (and the picture, only when the assistant needs it) to the assistant. It can then **point**: a tiny companion orb (a glowing sunset droplet) drifts to the button or menu and softly rings it, breathing and reacting to the voice while it waits. It never clicks by itself. "Fix the error on my screen" gives a coding worker a temporary, redacted screenshot that's deleted when the task ends. Screenshots are never saved; `data/screen-log.jsonl` only records that a look happened. In a plain browser, Echo asks you to share a screen each time and shows you the picture first. Details, permissions and a manual test plan: [docs/screen-awareness.md](docs/screen-awareness.md).
 
 ### Project names
 
@@ -111,14 +114,14 @@ Echo can change its own code without risking the running app:
 
 1. **Ask by voice:** "Improve yourself: …". The assistant can only *request* an unlock.
 2. **Confirm on screen:** a box shows a random code. Type it (plus your PIN, if you set one under Voice & vibe) and click **Unlock & start**. Speech can't unlock it, so a mishearing or someone overhearing can't trigger it. The unlock lasts **30 minutes or one task**, whichever comes first. Five wrong tries lock it for 15 minutes.
-3. **Isolated work:** the worker edits a separate **git worktree** on a `self/…` branch in a `.voiceops-worktrees` folder next to the Echo folder, never the live folder, and runs the tests and type check. It may read the live code, logs and data without asking; changing anything live still asks. The review runs the checks again the same way `npm run review-checks` does: packages installed first if `package.json` or the lockfile changed or `node_modules` is missing or stale, then tests and type check in a clean environment (throwaway data folder, a free port, no inherited `VOICEOPS_*` settings).
+3. **Isolated work:** the worker edits a separate **git worktree** on a `self/…` branch in a `.echo-worktrees` folder next to the Echo folder, never the live folder, and runs the tests and type check. It may read the live code, logs and data without asking; changing anything live still asks. The review runs the checks again the same way `npm run review-checks` does: packages installed first if `package.json` or the lockfile changed or `node_modules` is missing or stale, then tests and type check in a clean environment (throwaway data folder, a free port, no inherited `ECHO_*` settings).
    **Follow-ups** ("tell task 7 to also…") continue on the same branch and worktree, even after a merge or discard, and produce a new review.
 4. **Review:** the task tile shows the diff summary and check results. Use **View diff** to see the full diff. Nothing is committed until you click **Merge & restart** (the PIN is needed again, if set), or **Discard**.
 5. **Graceful restart:** Echo waits up to a minute for running tasks, pauses the rest, restarts, and **resumes them automatically**.
 6. **Auto-rollback:** the supervisor installs changed packages, then health-checks the new version. If it doesn't come up or it crashes, it resets to the last good commit, restarts, and tells you. How the *old* version exits (even a crash on the way out) doesn't count; only the new version's health does.
 7. **Audit log:** every request, unlock, failed attempt, review, merge, restart and rollback is in `data/self/audit.log`.
 
-**Updating from a version before September 25, 2026:** the supervisor that was already running then still judged a restart by how the old version exited, and the old voice library always crashed on exit, so every merge was rolled back. To apply the first update past that, quit Echo, start it once with `npm run serve`, then click **Merge & restart**. It hands over to the new supervisor (logging to `logs/voiceops.log`). From then on, merges restart on their own, and `start.command` works as usual.
+**Updating from a version before September 25, 2026:** the supervisor that was already running then still judged a restart by how the old version exited, and the old voice library always crashed on exit, so every merge was rolled back. To apply the first update past that, quit Echo, start it once with `npm run serve`, then click **Merge & restart**. It hands over to the new supervisor (logging to `logs/echo.log`). From then on, merges restart on their own, and `start.command` works as usual.
 
 The first time you use it, Echo turns its folder into a git repo with a baseline commit (the unlock box tells you). If the live folder has hand edits when you merge, Echo first commits them on `main` ("Save live edits before self-improve #N merge"), or, if that commit fails, stashes them as `echo-merge-<task>-<time>` and logs the stash's SHA, so hand edits never get lost.
 
@@ -163,6 +166,8 @@ Echo can be given to someone who isn't a developer. **[GETTING_STARTED.md](GETTI
 | `server.js` | HTTP + WebSocket server; wires everything together; graceful restart |
 | `lib/dispatcher.js` | The assistant you talk to: its prompt and tools |
 | `lib/tasks.js` | Workers: one Claude Code session per task, approvals, follow-ups, checkpoints |
+| `lib/screen.js`, `public/screen.js` | Screen awareness: look and point requests, redaction, the browser fallback, workers' temporary screenshots |
+| `macos/Sources/Screen.swift`, `Pointer.swift`, `PushToTalk.swift`, `ScreenBridge.swift` | The Mac app's capture and on-device text reading, the companion orb overlay, the global push-to-talk hotkey and permissions |
 | `lib/quick.js` | Quick native errands: contacts, iMessage with a confirmation card, calendar, open link/app |
 | `lib/approvals.js` | Tells the assistant about approvals: debounced, grouped, never stale |
 | `lib/safety.js` | What needs approval, and voice-granted auto-approvals |
@@ -181,7 +186,7 @@ Echo can be given to someone who isn't a developer. **[GETTING_STARTED.md](GETTI
 | `lib/projects.js` | Project discovery, sound-alike matching, aliases, hidden folders |
 | `lib/text.js` | Local time, and turning worker output into speakable summaries |
 | `lib/voice.js`, `lib/settings.js` | Text-to-speech engines; voice and personality settings |
-| `public/` | The voice UI: warm graphite with a sunset accent (theme tokens at the top of `style.css`), the liquid-light voice visual (`voiceviz.js`) and the ambient piano (`piano.js`) |
+| `public/` | The voice UI: black and white, with colour only for the answer (theme tokens at the top of `style.css`), the three-bar mark that shows what Echo is doing (`ui/mark.js`) and the ambient piano (`piano.js`) |
 | `public/icons/` | Echo logo sources (`echo-mark.svg`, `favicon*.svg`), the app icon PNGs and `echo-app-icon.svg` (a vector version of the icon). The app icon itself is drawn by `scripts/render-icon.swift` |
 | `test/` | `npm test` (unit tests plus an end-to-end rollback test) |
 | `data/` | Tasks, memory, `projects.json`, `conversations/` (daily transcripts), `self/` (audit log, PIN hash) |
@@ -205,21 +210,23 @@ npm run icons     # re-render the app icon (macos/Echo.icns and PNGs) with scrip
 
 | Var | Default |
 |---|---|
-| `VOICEOPS_ROOTS` | the projects folder picked in setup (a shared install: `~/Echo Projects`; a developer checkout: the folder Echo sits in); colon-separate to add more |
-| `VOICEOPS_PORT` | `4777` |
-| `VOICEOPS_TZ` | your Mac's time zone |
-| `VOICEOPS_MAX_WORKERS` | `4` concurrent workers (more get queued) |
-| `VOICEOPS_RESEARCH_DIR` | `_research` in the projects folder |
-| `VOICEOPS_SELF_UNLOCK_MINUTES` | `30` |
-| `VOICEOPS_DISPATCHER_MODEL` / `VOICEOPS_WORKER_MODEL` | your Claude Code default |
-| `VOICEOPS_DISPATCHER_EFFORT` | `low` (snappy voice replies; workers use full effort) |
+| `ECHO_ROOTS` | the projects folder picked in setup (a shared install: `~/Echo Projects`; a developer checkout: the folder Echo sits in); colon-separate to add more |
+| `ECHO_PORT` | `4777` |
+| `ECHO_TZ` | your Mac's time zone |
+| `ECHO_MAX_WORKERS` | `4` concurrent workers (more get queued) |
+| `ECHO_RESEARCH_DIR` | `_research` in the projects folder |
+| `ECHO_SELF_UNLOCK_MINUTES` | `30` |
+| `ECHO_DISPATCHER_MODEL` / `ECHO_WORKER_MODEL` | your Claude Code default |
+| `ECHO_DISPATCHER_EFFORT` | `low` (snappy voice replies; workers use full effort) |
 | `ELEVENLABS_API_KEY` | unset (premium voice off) |
 | `DEEPGRAM_API_KEY` | unset (cloud speech recognition off) |
-| `VOICEOPS_WHISPER_PORT` | port + 1 (`4778`), local Whisper server |
+| `ECHO_WHISPER_PORT` | port + 1 (`4778`), local Whisper server |
 | `ECHO_REPO` | `owner/repo` from `echo-release.json` (where updates come from) |
 | `ECHO_GITHUB_API` | `https://api.github.com` (a stand-in for tests and the simulation) |
 | `ECHO_UPDATE_CHECKS` | on; `off` stops the daily check |
 | `ECHO_DEVELOPER_COPY` | detected (`.git` and no `.echo-package`); `1` or `0` to force |
+
+Echo used to be called VoiceOps: the old `VOICEOPS_*` names of these settings still work (an `ECHO_*` value wins). To move a folder still named `VoiceOps` to `Echo`, run `npm run rename-folder` (details and every remaining old-name shim: [docs/rename.md](docs/rename.md)).
 
 ## Roadmap
 

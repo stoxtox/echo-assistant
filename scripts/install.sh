@@ -159,7 +159,8 @@ load_nvm() {
 }
 
 node_major() { node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
-node_ok() { command -v node >/dev/null 2>&1 && [ "$(node_major)" -ge 20 ] 2>/dev/null; }
+# 22.18 or newer (lib/nodeversion.js MIN_NODE): it runs Echo's TypeScript modules directly.
+node_ok() { command -v node >/dev/null 2>&1 && [ "$(node -p 'const [a, b] = process.versions.node.split(".").map(Number); a * 1000 + b' 2>/dev/null || echo 0)" -ge 22018 ] 2>/dev/null; }
 
 # Echo's own Node.js (~/.echo/node, from scripts/install-node.sh) first, then whatever else is there.
 find_node() {
@@ -281,7 +282,8 @@ if [ -n "$PORT_ARG" ]; then
   echo "$PORT_ARG" > .echo-port
   ok "Echo will use port $PORT_ARG (saved in .echo-port)."
 fi
-PORT="${VOICEOPS_PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port || true)}"
+PORT="${ECHO_PORT:-${VOICEOPS_PORT:-}}"
+PORT="${PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port || true)}"
 PORT="${PORT:-4777}"
 
 # ---------------------------------------------------------------- 1b. Apple's Command Line Tools
@@ -355,7 +357,7 @@ wait_for_clt() {
 # ---------------------------------------------------------------- 2. node
 
 step "checking for Node.js"
-info "Node.js is the free engine that runs Echo's code. Echo needs version 20 or newer."
+info "Node.js is the free engine that runs Echo's code. Echo needs version 22.18 or newer."
 if find_node; then
   ok "Node.js $(node -v) is ready ($(command -v node))."
 else
@@ -365,7 +367,7 @@ else
     say "Node.js isn't installed yet."
   fi
   if [ "$SKIP_NODE" = 1 ]; then
-    bad "Node.js 20 or newer is needed, and --skip-node was given, so the installer stops here."
+    bad "Node.js 22.18 or newer is needed, and --skip-node was given, so the installer stops here."
     say "   Install it from https://nodejs.org (the LTS button), then run the installer again."
     exit 1
   fi

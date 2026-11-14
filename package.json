@@ -1,15 +1,22 @@
 {
   "name": "echo",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Echo: a voice assistant that runs Claude Code workers across your projects",
   "main": "index.js",
   "scripts": {
-    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js test/*.test.ts",
     "start": "node supervisor.js",
     "dev": "node --env-file-if-exists=.env --watch server.js",
     "serve": "node --env-file-if-exists=.env server.js",
-    "check": "tsc -p jsconfig.json",
+    "check": "tsc -p jsconfig.json && tsc -p tsconfig.json",
     "review-checks": "node scripts/review-checks.js",
+    "scorecard": "node scripts/scorecard.ts",
+    "timeline": "node scripts/timeline.ts",
+    "transcript": "node scripts/transcript.ts",
+    "light": "node scripts/light.ts",
+    "speed": "node scripts/speed.ts",
+    "ideas": "node scripts/ideas.ts",
+    "golden": "node scripts/golden.js",
     "build": "npm run check",
     "setup:whisper": "zsh scripts/setup-whisper.sh",
     "icons": "zsh scripts/build-icons.sh",
@@ -22,7 +29,9 @@
     "release:publish": "node scripts/publish-release.js",
     "publish-repo": "node scripts/publish-repo.js",
     "release:simulate": "node scripts/simulate-release.js",
-    "update": "node scripts/update.js"
+    "update": "node scripts/update.js",
+    "eval": "node scripts/eval.js",
+    "rename-folder": "node scripts/rename-folder.js"
   },
   "keywords": [],
   "author": "",
@@ -35,7 +44,7 @@
     "zod": "^4.6.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",

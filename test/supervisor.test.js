@@ -20,7 +20,7 @@ const freePort = () =>
   });
 
 const GOOD = `import http from 'node:http';
-http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: 'good' }))).listen(process.env.VOICEOPS_PORT, '127.0.0.1');\n`;
+http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: 'good' }))).listen(process.env.ECHO_PORT, '127.0.0.1');\n`;
 const BAD = `throw new Error('broken update');\n`;
 
 test('a self-update that fails its health check is rolled back', { timeout: 60000 }, async () => {
@@ -40,7 +40,7 @@ test('a self-update that fails its health check is rolled back', { timeout: 6000
 
   const port = await freePort();
   const sup = spawn(process.execPath, [SUPERVISOR], {
-    env: { ...process.env, VOICEOPS_APP_DIR: app, VOICEOPS_PORT: String(port), VOICEOPS_HEALTH_TIMEOUT_MS: '4000' },
+    env: { ...process.env, ECHO_APP_DIR: app, ECHO_PORT: String(port), ECHO_HEALTH_TIMEOUT_MS: '4000' },
     stdio: 'pipe',
   });
   let output = '';
@@ -77,7 +77,7 @@ test('the old version dying while restarting applies the update instead of rolli
   fs.mkdirSync(path.join(data, 'self'), { recursive: true });
   const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: app, encoding: 'utf8' }).trim();
   const server = (version) => `import http from 'node:http';
-http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: '${version}', pid: process.pid }))).listen(process.env.VOICEOPS_PORT, '127.0.0.1');\n`;
+http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: '${version}', pid: process.pid }))).listen(process.env.ECHO_PORT, '127.0.0.1');\n`;
   git('init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(app, 'server.js'), server('old'));
   git('add', '-A');
@@ -93,7 +93,7 @@ http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: '${v
     }
   };
   const sup = spawn(process.execPath, [SUPERVISOR], {
-    env: { ...process.env, VOICEOPS_APP_DIR: app, VOICEOPS_DATA_DIR: data, VOICEOPS_PORT: String(port), VOICEOPS_HEALTH_TIMEOUT_MS: '8000' },
+    env: { ...process.env, ECHO_APP_DIR: app, ECHO_DATA_DIR: data, ECHO_PORT: String(port), ECHO_HEALTH_TIMEOUT_MS: '8000' },
     stdio: 'pipe',
   });
   let output = '';
@@ -144,7 +144,7 @@ test('a broken update is still rolled back after the old version dies while rest
     }
   };
   const sup = spawn(process.execPath, [SUPERVISOR], {
-    env: { ...process.env, VOICEOPS_APP_DIR: app, VOICEOPS_DATA_DIR: data, VOICEOPS_PORT: String(port), VOICEOPS_HEALTH_TIMEOUT_MS: '4000' },
+    env: { ...process.env, ECHO_APP_DIR: app, ECHO_DATA_DIR: data, ECHO_PORT: String(port), ECHO_HEALTH_TIMEOUT_MS: '4000' },
     stdio: 'pipe',
   });
   let output = '';
@@ -179,7 +179,7 @@ http.createServer((req, res) => {
   // gracefulRestart: tell the supervisor, then die abnormally before the exit code gets out.
   if (req.url === '/ipc-then-signal') return res.end('bye', () => process.send({ type: 'restart' }, () => process.kill(process.pid, 'SIGKILL')));
   res.end(JSON.stringify({ ok: true, version: '${version}', pid: process.pid }));
-}).listen(process.env.VOICEOPS_PORT, '127.0.0.1');\n`;
+}).listen(process.env.ECHO_PORT, '127.0.0.1');\n`;
 
 async function supervised(name, { timeoutMs = 8000 } = {}) {
   const app = path.join(dirs.root, `${name}-app`);
@@ -201,7 +201,7 @@ async function supervised(name, { timeoutMs = 8000 } = {}) {
   };
   const hit = (p) => fetch(`http://127.0.0.1:${port}${p}`).then((r) => r.text()).catch(() => '');
   const sup = spawn(process.execPath, [SUPERVISOR], {
-    env: { ...process.env, VOICEOPS_APP_DIR: app, VOICEOPS_DATA_DIR: data, VOICEOPS_PORT: String(port), VOICEOPS_HEALTH_TIMEOUT_MS: String(timeoutMs) },
+    env: { ...process.env, ECHO_APP_DIR: app, ECHO_DATA_DIR: data, ECHO_PORT: String(port), ECHO_HEALTH_TIMEOUT_MS: String(timeoutMs) },
     stdio: 'pipe',
   });
   const out = { text: '' };

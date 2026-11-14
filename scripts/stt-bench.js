@@ -9,7 +9,7 @@
 // breath, the room): any text for it is a made-up turn. --prompts is a JSON object of named
 // prompts ({ "none": "", "short": "Glossary: ..." }). A throwaway whisper-server runs on a free
 // port and is stopped at the end. --vocab-prompt uses Echo's own prompt (lib/vocab.js), built
-// from VOICEOPS_DATA_DIR. Make test clips with macOS voices, for example:
+// from ECHO_DATA_DIR. Make test clips with macOS voices, for example:
 //   say -v Rishi --file-format=WAVE --data-format=LEI16@16000 -o c1.wav "Check the Marigold project"
 import fs from 'node:fs';
 import net from 'node:net';

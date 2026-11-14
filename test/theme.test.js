@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-// Keeps the Echo theme readable: every key text/background pair must meet WCAG AA (4.5:1).
+// Keeps the Echo theme readable (every key text/background pair must meet WCAG AA, 4.5:1) and
+// quiet (colour only where it means something).
 const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
 /** @param {string} block @returns {Record<string, string>} */
@@ -28,9 +29,9 @@ function contrast(a, b) {
 const PAIRS = [
   ['ink', 'bg'], ['ink', 'panel'], ['ink', 'panel-2'],
   ['muted', 'bg'], ['muted', 'panel'], ['muted', 'panel-2'],
-  ['accent', 'bg'], ['accent', 'panel'],
-  ['warn', 'panel'], ['bad', 'panel'], ['ok', 'panel'], ['warn', 'panel-2'], ['accent', 'panel-2'],
-  ['on-accent', 'accent-fill'], ['on-warn', 'warn-fill'], ['on-bad', 'bad-fill'],
+  ['bad', 'bg'], ['bad', 'panel'],
+  // the primary action and your own words are an --ink fill; a destructive button is a --bad fill
+  ['on-ink', 'ink'], ['on-bad', 'bad-fill'],
 ];
 
 for (const [mode, t] of [['dark', dark], ['light', light]]) {
@@ -43,26 +44,46 @@ for (const [mode, t] of [['dark', dark], ['light', light]]) {
   });
 }
 
-test('dark theme uses the Echo palette: warm graphite with a sunset accent', () => {
-  assert.equal(dark.bg.toUpperCase(), '#0E0D10');
-  assert.equal(dark.panel.toUpperCase(), '#17151A');
-  assert.equal(dark.line.toUpperCase(), '#2A2630');
-  assert.equal(dark.coral.toUpperCase(), '#FF6A5B');
-  assert.equal(dark.tangerine.toUpperCase(), '#FF9F43');
-  assert.equal(dark.accent.toUpperCase(), '#FF7A59');
-  assert.equal(dark.warn.toUpperCase(), '#FFD166');
-  assert.equal(dark.ok.toUpperCase(), '#7BD389');
-  assert.equal(dark.bad.toUpperCase(), '#FF5C7A');
-  assert.equal(dark.ink.toUpperCase(), '#F5F1EC');
-  assert.equal(dark.muted.toUpperCase(), '#A39E99');
-  assert.equal(light.bg.toUpperCase(), '#FAF7F2');
+test('the palette is black, white and quiet: near-black surfaces, white ink, grey secondary text', () => {
+  assert.equal(dark.bg.toUpperCase(), '#0A0A0B');
+  assert.equal(dark.panel.toUpperCase(), '#131315');
+  assert.equal(dark.ink.toUpperCase(), '#F5F5F7');
+  assert.equal(dark.muted.toUpperCase(), '#9A9AA2');
+  assert.equal(dark['on-ink'], '#000000');
+  assert.equal(light.bg.toUpperCase(), '#FFFFFF');
+  assert.equal(light.ink.toUpperCase(), '#0A0A0B');
 });
 
-test('no mint or navy left in the UI and icons', () => {
-  const files = ['../public/style.css', '../public/index.html', '../public/app.js', '../public/voiceviz.js', '../public/manifest.webmanifest',
-    ...fs.readdirSync(new URL('../public/icons', import.meta.url)).filter((f) => f.endsWith('.svg')).map((f) => `../public/icons/${f}`)];
+test('colour is one gradient, and it is only for the answer, a switch that is on, and "needs you"', () => {
+  assert.match(css, /--grad: linear-gradient\(90deg, #4780FF, #A866FF 38%, #FF669E 70%, #FFB866\);/);
+  // Every rule that paints with the gradient, by its selector.
+  const users = [...css.matchAll(/([^{}]+)\{[^{}]*var\(--grad\)[^{}]*\}/g)].map((m) => m[1].trim().split('\n').pop().trim());
+  const allowed = [
+    /^\.mark/,                                   // the mark's colour bar: the answer
+    /^\.msg\.ai::before$/,                        // the line beside Echo's words: the answer
+    /^\.act-prog b$/,                            // how far along Echo's work is
+    /^\.switch \.track::before$/,                 // a switch that is on
+    /^\.look-choice:has\(input:checked\)$/,       // the companion look that is picked (on, like a switch)
+    /\.state$/,                                  // the Listening bar's hairline
+    // Echo is hearing you (the same meaning as the Listening bar, over a conversation: the approved round-2 design)
+    /^\.msg\.you\.live-bubble$/, /^\.lvl i$/, /\.composer$/,
+    /^\.tl-turn\.flagged::before$/,              // the thin edge of a turn that was slow or went wrong (Settings, What happened)
+    // needs you: confirmations, approvals, a worker waiting for your OK, self-improve unlocked
+    /^\.msg\.confirm-card$/, /^\.msg\.task-card\.waiting$/, /^\.msg\.screen-card$/, /^\.approval-group$/, /^\.status\.waiting$/, /^\.self-badge$/, /\.tab-count\.attention$/,
+  ];
+  for (const sel of users) assert.ok(allowed.some((re) => re.test(sel)), `colour used outside its three meanings: ${sel}`);
+  assert.ok(users.length >= 10, `found ${users.length} uses`);
+});
+
+test('the old sunset accent is gone from the page, with the old mint and navy', () => {
+  const dir = (d) => fs.readdirSync(new URL(`../public/${d}`, import.meta.url));
+  const files = ['style.css', 'index.html', 'app.js', 'settings.js', 'onboarding.js', 'manifest.webmanifest', ...dir('ui').map((f) => `ui/${f}`),
+    ...dir('icons').filter((f) => f.endsWith('.svg')).map((f) => `icons/${f}`)];
   for (const f of files) {
-    const text = fs.readFileSync(new URL(f, import.meta.url), 'utf8');
-    assert.ok(!/#3EE6C1|#0B1220|#0B7D68/i.test(text), `${f} still uses the old palette`);
+    const text = fs.readFileSync(new URL(`../public/${f}`, import.meta.url), 'utf8');
+    assert.ok(!/#3EE6C1|#0B1220|#0B7D68/i.test(text), `${f} still uses the mint and navy palette`);
+    if (f.startsWith('icons/')) continue; // the app icon is drawn elsewhere
+    assert.ok(!/#FF6A5B|#FF9F43|#FF7A59|#FFD166|#FFB45E|#0E0D10|#FAF7F2/i.test(text), `${f} still uses a sunset colour`);
+    assert.ok(!/sunsetSend|url\(#sunset\)|var\(--(sunset|coral|tangerine|gold|accent)[),-]/.test(text), `${f} still uses a sunset token or gradient id`);
   }
 });

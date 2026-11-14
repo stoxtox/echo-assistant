@@ -23,7 +23,7 @@ const selfTask = (tasks, extra = {}) => tasks.create({ kind: 'self', project: 'E
 
 test('stopping a self task marks it stopped, not working', async () => {
   const tasks = new TaskManager({ queryFn: hang });
-  new SelfImprove(tasks, { appDir: app });
+  new SelfImprove(tasks, { access: { allowed: true, reason: 'test dev copy' }, appDir: app });
   const t = selfTask(tasks);
   await until(() => tasks.isLive(t.id), 3000, 'running');
   assert.equal(selfState(t, tasks), 'working');
@@ -41,7 +41,7 @@ test('after a restart, stale "working" self tasks are cleaned up', () => {
   saved.push({ ...saved[0], id: 99, status: 'interrupted', resumeAfterRestart: true, self: { ...saved[0].self, state: 'working' } });
   fs.writeFileSync(path.join(dirs.data, 'tasks.json'), JSON.stringify(saved));
   const tasks = new TaskManager({ queryFn: hang });
-  new SelfImprove(tasks, { appDir: app });
+  new SelfImprove(tasks, { access: { allowed: true, reason: 'test dev copy' }, appDir: app });
   assert.equal(tasks.get(saved[0].id).self.state, 'stopped');
   assert.equal(tasks.get(99).self.state, 'working', 'one about to resume is left alone');
   for (const t of tasks.list()) if (tasks.isLive(t.id)) tasks.stop(t.id);
@@ -57,14 +57,14 @@ test('a finished self task whose review is still being prepared is not reported 
 test('a confirmation request waiting in the window survives a restart, with a fresh code', () => {
   let clock = Date.now();
   const tasks = new TaskManager({ queryFn: hang });
-  const before = new SelfImprove(tasks, { appDir: app, now: () => clock });
+  const before = new SelfImprove(tasks, { access: { allowed: true, reason: 'test dev copy' }, appDir: app, now: () => clock });
   const req = before.requestUnlock('Make the header premium');
   const saved = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
   assert.equal(saved.instruction, 'Make the header premium');
   assert.ok(!('code' in saved) && !JSON.stringify(saved).includes(req.code), 'the code is never written to disk');
 
   clock += 60 * 1000; // Echo restarts a minute later
-  const after = new SelfImprove(new TaskManager({ queryFn: hang }), { appDir: app, now: () => clock });
+  const after = new SelfImprove(new TaskManager({ queryFn: hang }), { access: { allowed: true, reason: 'test dev copy' }, appDir: app, now: () => clock });
   const restored = after.status().pendingRequest;
   assert.ok(restored, 'still waiting after the restart');
   assert.equal(restored.instruction, 'Make the header premium');
@@ -77,10 +77,10 @@ test('a confirmation request waiting in the window survives a restart, with a fr
 
 test('an expired request is not brought back', () => {
   let clock = Date.now();
-  const s1 = new SelfImprove(new TaskManager({ queryFn: hang }), { appDir: app, now: () => clock });
+  const s1 = new SelfImprove(new TaskManager({ queryFn: hang }), { access: { allowed: true, reason: 'test dev copy' }, appDir: app, now: () => clock });
   s1.requestUnlock('Old idea');
   clock += 6 * 60 * 1000;
-  const s2 = new SelfImprove(new TaskManager({ queryFn: hang }), { appDir: app, now: () => clock });
+  const s2 = new SelfImprove(new TaskManager({ queryFn: hang }), { access: { allowed: true, reason: 'test dev copy' }, appDir: app, now: () => clock });
   assert.equal(s2.status().pendingRequest, null);
   assert.ok(!fs.existsSync(requestFile));
 });

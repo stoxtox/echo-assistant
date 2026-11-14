@@ -113,3 +113,20 @@ test("Echo's own reply heard back by the mic is recognized", () => {
   assert.equal(echoesReply('yes', reply), false);
   assert.equal(echoesReply('three of them look strong for you', ''), false);
 });
+
+test('a name label Whisper puts in front, as in a meeting transcript, is not part of what was said', async () => {
+  const { dropSpeakerLabel } = await import('../lib/heard.js');
+  assert.equal(dropSpeakerLabel("Gino: And you'll do it again.", "and you'll do it again"), "And you'll do it again.", 'the live listener heard no such name');
+  assert.equal(dropSpeakerLabel('Maria Lopez: Okay.'), 'Okay.', 'a first and last name, no live words to go by');
+  assert.equal(dropSpeakerLabel('Mom: running late', 'mom running late'), 'Mom: running late', 'said out loud: kept');
+  assert.equal(dropSpeakerLabel('Mom: running late'), 'Mom: running late', 'one word and nothing to go by: kept');
+  assert.equal(dropSpeakerLabel('Monday: call the dentist', 'call the dentist'), 'Monday: call the dentist');
+  assert.equal(dropSpeakerLabel('Dear John: thanks for the note'), 'Dear John: thanks for the note');
+  assert.equal(dropSpeakerLabel('>> Open my calendar'), 'Open my calendar');
+  assert.equal(dropSpeakerLabel('Note: buy milk'), 'Note: buy milk', 'a dictated note keeps its heading');
+  assert.equal(dropSpeakerLabel('Subject: the launch'), 'Subject: the launch');
+  assert.equal(dropSpeakerLabel('Yes: send it'), 'Yes: send it', 'a yes is never dropped');
+  assert.equal(dropSpeakerLabel('set a timer for 10:30'), 'set a timer for 10:30');
+  assert.equal(dropSpeakerLabel('Remind me at 5: call home'), 'Remind me at 5: call home', 'only a name, at the very start');
+  assert.equal(cleanHeard({ text: 'x', speechMs: 3000, segments: [{ text: 'Gino: Yeah, the first one says launch readiness.', lp: -0.2 }] }, { live: 'yeah the first one says launch readiness' }).text, 'Yeah, the first one says launch readiness.');
+});

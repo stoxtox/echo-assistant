@@ -1,29 +1,46 @@
+import { migrateLegacyLog, LOG } from './lib/legacy.js'; // first: VOICEOPS_* settings still work
+import { fromBroadcast as conversationLog } from './lib/transcript.ts';
+import { recentTerms } from './lib/recentterms.js';
+import { secondListenOn } from './lib/secondlisten.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import { config, APP_DIR } from './lib/config.js';
 import { TaskManager } from './lib/tasks.js';
 import { ApprovalRelay } from './lib/approvals.js';
-import { Dispatcher, openTerminal, FILLERS } from './lib/dispatcher.js';
-import { listProjects } from './lib/projects.js';
-import { synthesize, listVoices, warmUp, wordsHeader, voiceStatus, prewarmPhrases } from './lib/voice.js';
-import { ACKS } from './lib/speech.js';
-import { getSettings, saveSettings, markFirstRun, PERSONALITIES } from './lib/settings.js';
-import { onboardingState, saveOnboarding, wipePersonalData } from './lib/onboarding.js';
+import { Dispatcher, QUIET_MODE_LINE } from './lib/dispatcher.js';
+import { modeLine, shouldRest, onlyDidntCatch, UNCLEAR_RESTS_AFTER } from './lib/listenmode.js';
+import { quickReplies } from './lib/quickreplies.js';
+import { heardNote } from './lib/heardreport.js';
+import { warmUp, prewarmPhrases, voiceBudget } from './lib/voice.js';
+import { WHY as VOICE_WHY } from './lib/voicebudget.js';
+import { getSettings, saveSettings, markFirstRun } from './lib/settings.js';
+import { wipePersonalData } from './lib/onboarding.js';
 import { SelfImprove, audit } from './lib/selfimprove.js';
 import { QuickActions } from './lib/quick.js';
 import { nowString, friendlyError } from './lib/text.js';
-import { addCost, costSummary, backfillWorkerCosts } from './lib/costs.js';
-import { transcribe, engines, resolveEngine, startWhisper, sttLanguageFor, wakeTranscribe } from './lib/stt.js';
-import { matchWake, stripWake } from './lib/wake.js';
-import { isBlankText, checkHeard, saveBlankClip, wavStats, addressesEcho, echoesReply } from './lib/heard.js';
-import { Corrector } from './lib/correct.js';
-import { loadVocab, setWords, vocabularyTerms } from './lib/vocab.js';
+import { addCost, backfillWorkerCosts } from './lib/costs.js';
+import { resolveEngine, startWhisper } from './lib/stt.js';
+import { bodyToken, tokenOk } from './lib/bodylink.ts';
+import { record as timeline, ingest as timelineIngest } from './lib/timeline.ts';
+import { pruneDroppedWords } from './lib/droplog.js';
+import { dropRetiredCorrections } from './lib/vocab.js';
+import { ScreenBridge, sweepScreenShots } from './lib/screen.js';
 import { Updater } from './lib/updater.js';
-import { saveAttachment, findAttachment, resolveAttachments, MAX_ATTACHMENT_BYTES } from './lib/attachments.js';
 import { ClaudeAuth } from './lib/claudeauth.js';
+import { TAKE_OVER_LINE } from './lib/computer.js';
+import { Sheets } from './lib/sheets.js';
+import { pairingCode, extensionRefusal } from './lib/browser.js';
+import { xdToken, xdRefusal } from './lib/xd.js';
+import { sendJson, originOk, serveStatic } from './lib/server/http.js';
+import { speechIntake } from './lib/server/speech.js';
+import { apiHandler } from './lib/server/routes.js';
+import { quitAfter } from './lib/server/quit.js';
+import { pageConnection, slimTask } from './lib/server/window.js';
+import { voice } from './lib/voicestate.js';
 
 const RESTART_CODE = 75;
 // A fresh install (or one just reset) opens with the setup wizard, and its projects folder exists.
@@ -32,7 +49,13 @@ if (!fs.existsSync(config.roots[0])) fs.mkdirSync(config.roots[0], { recursive: 
 const tasks = new TaskManager();
 const selfImprove = new SelfImprove(tasks);
 const quick = new QuickActions();
-const dispatcher = new Dispatcher(tasks, selfImprove, quick);
+const screen = new ScreenBridge();
+const dispatcher = new Dispatcher(tasks, selfImprove, quick, screen);
+const computer = dispatcher.computer;
+// Excel and Numbers through their own scripting (lib/sheets.js), on the AppleScript runner the quick actions use.
+computer.sheets = new Sheets({ run: (script, args, opts) => quick.osa(script, args, opts), escape: (app) => computer.sheetEscape(app) });
+// Mistaken learned corrections from earlier versions go (lib/vocab.js RETIRED_CORRECTIONS).
+for (const id of dropRetiredCorrections()) console.log(`[vocab] dropped the retired correction ${id}`);
 let restarting = false;
 backfillWorkerCosts(tasks.list());
 const updater = new Updater({
@@ -41,281 +64,54 @@ const updater = new Updater({
   isBusy: () => tasks.list().some((t) => tasks.isLive(t.id) || t.status === 'queued'),
 });
 updater.on('status', (status) => broadcast({ type: 'update', status }));
-const corrector = new Corrector();
 const claudeAuth = new ClaudeAuth();
-corrector.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assistant', usd) }));
 
-/* ---------- conversation log (for reviewing and improving Echo) ---------- */
-const convoDir = path.join(config.dataDir, 'conversations');
-fs.mkdirSync(convoDir, { recursive: true });
-const recent = []; // last few lines, as context for fixing mishearings
-const wakeCounts = { checks: 0, wakes: 0 }; // "Hey Echo" checks since start (never what was said)
-function logConvo(who, textIn) {
-  if (who === 'User' || who === 'Assistant') {
-    recent.push(`${who}: ${String(textIn).slice(0, 300)}`);
-    if (recent.length > 8) recent.shift();
-  }
-  const d = new Date();
-  const file = path.join(convoDir, `${d.toLocaleDateString('en-CA', { timeZone: config.timezone })}.md`);
-  const time = d.toLocaleTimeString('en-US', { timeZone: config.timezone });
-  fs.appendFileSync(file, `**[${time}] ${who}:** ${String(textIn).replace(/\n+/g, ' ')}\n\n`);
+/* ---------- the page's WebSocket, and telling every page ---------- */
+const wss = new WebSocketServer({ noServer: true, verifyClient: ({ req }) => originOk(req) });
+const broadcast = (msg) => {
+  // What is said to and by Echo, word for word, for reading a session back (lib/transcript.ts).
+  conversationLog(msg, () => replyBuf.trim());
+  const data = JSON.stringify(msg);
+  for (const c of wss.clients) if (c.readyState === 1) c.send(data);
+};
+const broadcastSelf = () => broadcast({ type: 'self_status', status: selfImprove.status() });
+const slim = (t) => slimTask(tasks, t);
+
+/* ---------- listening (lib/server/speech.js) and the API (lib/server/routes.js) ---------- */
+/**
+ * The one listening state (lib/listenmode.js): kept as a setting, and every page and the Mac app
+ * are told when it changes and why ("you said my name", "three quiet minutes").
+ * @param {'listening' | 'resting' | 'off'} mode @param {string} [why]
+ */
+function setListenMode(mode, why = '') {
+  if (getSettings().listenMode === mode) return false;
+  const next = saveSettings({ listenMode: mode });
+  timeline('server', 'listen.mode', { mode, why });
+  broadcast({ type: 'settings', settings: { listenMode: next.listenMode } });
+  broadcast({ type: 'listen_mode', mode, why, line: modeLine(mode, why) });
+  return true;
 }
+const speech = speechIntake({ dispatcher, quick, screen, broadcast, setListenMode });
+// Listening rests by itself after three quiet minutes (never in the middle of a job, a reply or a question).
+// The three minutes count from when it last began to listen, however that came about.
+let listenSince = Date.now(), listenWas = getSettings().listenMode;
+setInterval(() => {
+  if (getSettings().listenMode !== listenWas) { listenWas = getSettings().listenMode; listenSince = Date.now(); }
+  const lastAt = Math.max(dispatcher.lastUserAt || 0, dispatcher.lastSpokeAt || 0, dispatcher.lastSpeechEnd || 0, listenSince);
+  if (shouldRest({ mode: getSettings().listenMode, now: Date.now(), lastAt, busy: dispatcher.busy, working: computer.driving && dispatcher.busy, waiting: computer.pending.size > 0 || quick.pendingList().length > 0 || Boolean(computer.lesson?.active) || Boolean(computer.play) })) setListenMode('resting', 'quiet');
+}, 15 * 1000).unref();
+
+const { logConvo, handleUtterance } = speech;
+/** A task or Mac event for the assistant, also kept in the conversation log. */
+const notifyTask = (t, textIn, opts = {}) => {
+  logConvo('Event', textIn);
+  dispatcher.notify(textIn, opts);
+};
+const api = apiHandler({ tasks, selfImprove, quick, screen, dispatcher, computer, updater, claudeAuth, speech, broadcast, broadcastSelf, prewarmVoice, gracefulRestart, resetAndRestart, shutDown: quit, isRestarting: () => restarting });
 
 /* ---------- HTTP ---------- */
-const PUBLIC = path.join(APP_DIR, 'public');
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-const ALLOWED_ORIGINS = new Set([`http://localhost:${config.port}`, `http://127.0.0.1:${config.port}`]);
-// Blocks other websites open in your browser from driving Echo.
-const originOk = (req) => !req.headers.origin || ALLOWED_ORIGINS.has(req.headers.origin);
-
-const readJson = (req) =>
-  new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-  });
-const readBody = (req, limit = 15 * 1024 * 1024) =>
-  new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > limit) reject(new Error('Upload too large'));
-      else chunks.push(c);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-const sendJson = (res, data, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
-
-async function api(req, res, url) {
-  const route = `${req.method} ${url.pathname}`;
-  if (req.method !== 'GET' && !originOk(req)) return sendJson(res, { error: 'Forbidden origin' }, 403);
-  if (route.startsWith('GET /api/attachments/')) {
-    const a = findAttachment(decodeURIComponent(url.pathname.slice('/api/attachments/'.length)));
-    if (!a) return sendJson(res, { error: 'Not found' }, 404);
-    res.writeHead(200, { 'Content-Type': a.mime, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
-    fs.createReadStream(a.path).pipe(res);
-    return;
-  }
-  switch (route) {
-    case 'POST /api/attachments': {
-      // One image per request, body = the file; the page shrinks it first.
-      const a = saveAttachment(await readBody(req, MAX_ATTACHMENT_BYTES + 1), req.headers['content-type']);
-      return sendJson(res, { id: a.id, url: a.url, bytes: a.bytes });
-    }
-    case 'GET /api/health':
-      return sendJson(res, { ok: !restarting && Boolean(dispatcher.input), tasks: tasks.list().length, pid: process.pid });
-    case 'POST /api/tts': {
-      const s = getSettings();
-      const { text, provider = s.ttsProvider, voice = s.voice, speed = s.speed, previousText } = await readJson(req);
-      const audio = await synthesize({ text, provider, voice, speed, previousText });
-      const words = wordsHeader(audio.words);
-      return res.writeHead(200, { 'Content-Type': audio.mime, 'Cache-Control': 'no-store', ...(words && { 'X-Echo-Words': words }) }).end(audio.data);
-    }
-    case 'GET /api/voices':
-      return sendJson(res, { providers: await listVoices(), personalities: Object.entries(PERSONALITIES).map(([id, p]) => ({ id, label: p.label })) });
-    case 'GET /api/settings':
-      return sendJson(res, getSettings());
-    case 'POST /api/settings': {
-      const before = getSettings();
-      // The projects folder is checked and created by setup (POST /api/onboarding).
-      const { projectsDir, onboarded, ...patch } = await readJson(req);
-      const next = saveSettings(patch);
-      if (['assistantName', 'userName', 'personality', 'beginnerMode', 'interests'].some((k) => JSON.stringify(before[k]) !== JSON.stringify(next[k]))) dispatcher.reload();
-      if (['ttsProvider', 'voice', 'speed'].some((k) => before[k] !== next[k])) prewarmVoice(next);
-      broadcast({ type: 'settings', settings: next });
-      return sendJson(res, next);
-    }
-    case 'GET /api/onboarding':
-      return sendJson(res, onboardingState(selfImprove));
-    case 'POST /api/onboarding': {
-      const before = getSettings();
-      const out = saveOnboarding(await readJson(req), { selfImprove });
-      const next = out.settings;
-      broadcast({ type: 'settings', settings: next });
-      if (before.projectsDir !== next.projectsDir) broadcast({ type: 'projects', projects: listProjects() });
-      if (next.onboarded && (!before.onboarded || before.projectsDir !== next.projectsDir || before.beginnerMode !== next.beginnerMode || before.userName !== next.userName)) dispatcher.reload();
-      broadcastSelf();
-      return sendJson(res, { ok: true, ...out, hasPin: selfImprove.hasPin() });
-    }
-    case 'GET /api/claude/status':
-      return sendJson(res, await claudeAuth.status());
-    case 'POST /api/claude/login': {
-      // Opens the Claude sign-in in the browser; the wizard polls GET /api/claude/status.
-      const { method } = await readJson(req);
-      return sendJson(res, { ok: true, login: claudeAuth.startLogin(method === 'api' ? 'api' : 'subscription') });
-    }
-    case 'POST /api/claude/login/cancel':
-      claudeAuth.cancelLogin();
-      return sendJson(res, { ok: true });
-    case 'POST /api/claude/test':
-      return sendJson(res, await claudeAuth.test());
-    case 'POST /api/permissions/test': {
-      const { kind } = await readJson(req);
-      return sendJson(res, await quick.testPermission(kind));
-    }
-    case 'POST /api/permissions/open': {
-      const { pane } = await readJson(req);
-      return sendJson(res, await quick.openPrivacySettings(pane));
-    }
-    case 'POST /api/reset': {
-      // Wipes this install's personal data, then restarts into the setup wizard.
-      const { confirm, pin } = await readJson(req);
-      if (confirm !== 'RESET') return sendJson(res, { error: 'Type RESET to confirm.' }, 400);
-      if (!selfImprove.checkPin(pin)) return sendJson(res, { error: 'Wrong PIN.' }, 403);
-      sendJson(res, { ok: true, restarting: true });
-      resetAndRestart();
-      return;
-    }
-    case 'POST /api/utterance': {
-      // Audio from the page (16 kHz mono WAV) -> text -> corrections -> Echo.
-      const s = getSettings();
-      const engine = resolveEngine(s.sttEngine);
-      if (engine === 'browser') return sendJson(res, { error: 'Browser recognition runs in the page' }, 400);
-      const wav = await readBody(req);
-      const heard = await transcribe(wav, { engine, language: s.sttLanguage });
-      // What the live listener showed, and the page's notes on the mic (public/app.js sendClip).
-      const live = headerJson(req, 'x-echo-live') ?? '';
-      const page = headerJson(req, 'x-echo-clip') || {};
-      const { pick, cleaned, entry: blank } = checkHeard({ wav, heard, live, livePreview: s.livePreview, page, clipDir: path.join(config.dataDir, 'stt-blank-clips') });
-      if (blank) {
-        // Kept for finding the cause: the clip, its loudness, and the page's notes on the mic.
-        fs.appendFileSync(sttLog, JSON.stringify(blank) + '\n');
-        console.log(`[stt] ${blank.event}: final ${JSON.stringify(heard.text)}, used ${pick.source}; ${blank.cause} (${blank.stats.seconds}s, peak ${blank.stats.peak})`);
-      }
-      if (pick.source === 'none') return sendJson(res, { empty: true, engine, ms: heard.ms, reason: cleaned.reason || 'blank' });
-      // A wake-word turn: "Hey Echo" comes off the front, the request stays. Just "Hey Echo" and
-      // nothing after it isn't a turn.
-      const said = page.mode === 'wake' ? stripWake(pick.text) : pick.text;
-      if (isBlankText(said)) return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'wake_only' });
-      const lastReply = recent.findLast((l) => l.startsWith('Assistant: '))?.slice(11) || '';
-      if (echoesReply(said, lastReply)) {
-        fs.appendFileSync(sttLog, JSON.stringify({ at: new Date().toISOString(), event: 'own_voice', engine, text: said, live }) + '\n');
-        return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'own_voice' });
-      }
-      // Hands-free with the wake word on: only speech that says "Echo", or a follow-up right after
-      // her reply, becomes a turn. Talk around the mic (a call, the TV) is left alone.
-      if (page.mode === 'hands-free' && s.wakeWord && !page.followUp && !addressesEcho(said)) {
-        // Only that it happened: talk that wasn't for Echo is never written down.
-        fs.appendFileSync(sttLog, JSON.stringify({ at: new Date().toISOString(), event: 'not_for_echo', engine }) + '\n');
-        return sendJson(res, { empty: true, engine, ms: heard.ms, reason: 'not_for_echo' });
-      }
-      // The newest clips are kept with their loudness and the mic's settings (echo cancellation
-      // on?), so a misheard sentence can be played back and checked later.
-      let clip = null;
-      try {
-        clip = path.basename(saveBlankClip(path.join(config.dataDir, 'stt-clips'), wav, RECENT_CLIPS));
-      } catch {}
-      const audio = { ...wavStats(wav), clip, aec: page.aec, echoTailMs: page.echoTailMs, mode: page.mode, speechMs: heard.speechMs, keptSeconds: heard.keptSeconds };
-      // Every stage, so a misheard turn can be traced: the live listener, Whisper as it came back
-      // (with each segment's confidence), what the clean-up dropped, and which one was used.
-      const stages = { live: typeof live === 'string' ? live : '', whisper: heard.text, segments: heard.segments, dropped: cleaned.dropped, source: pick.source, reason: pick.reason || cleaned.reason };
-      // Live text has no word confidences, so nothing is flagged as uncertain.
-      const out = await handleUtterance(said, { uncertain: pick.source === 'final' ? heard.uncertain : [], engine: pick.source === 'live' ? `${engine}+live` : engine, sttMs: heard.ms, audio, stages });
-      return sendJson(res, { ...out, source: pick.source });
-    }
-    case 'POST /api/wake': {
-      // A wake-word check from the page (public/wake.js): the first ~1.8 s of a burst of speech.
-      // Local Whisper only; the audio and the words are never logged or saved.
-      const s = getSettings();
-      if (!s.wakeWord || !engines().whisper.available) return sendJson(res, { wake: false, off: true });
-      const heard = await wakeTranscribe(await readBody(req, 512 * 1024));
-      const m = matchWake(heard.text, { sensitivity: s.wakeSensitivity, lp: heard.lp });
-      wakeCounts.checks++;
-      if (m.wake) wakeCounts.wakes++;
-      return sendJson(res, { wake: m.wake, rest: m.wake ? m.rest : '', ms: heard.ms });
-    }
-    case 'GET /api/stt': {
-      const s = getSettings();
-      const active = resolveEngine(s.sttEngine);
-      // browserLang: what the page sets recognition.lang to (always English).
-      // wake: the "Hey Echo" listener needs local Whisper; counts since Echo started, never the words.
-      return sendJson(res, { wake: { available: engines().whisper.available, on: s.wakeWord, ...wakeCounts }, engines: engines(), active, choice: s.sttEngine, language: s.sttLanguage, browserLang: sttLanguageFor('browser', s.sttLanguage), engineLang: sttLanguageFor(active, s.sttLanguage) });
-    }
-    case 'GET /api/vocabulary':
-      return sendJson(res, { ...loadVocab(), terms: vocabularyTerms() });
-    case 'POST /api/vocabulary': {
-      const body = await readJson(req);
-      if (Array.isArray(body.words)) setWords(body.words);
-      if (body.removeCorrection) {
-        const v = loadVocab();
-        delete v.corrections[String(body.removeCorrection).toLowerCase()];
-        fs.writeFileSync(path.join(config.dataDir, 'vocabulary.json'), JSON.stringify(v, null, 2));
-      }
-      return sendJson(res, { ...loadVocab(), terms: vocabularyTerms() });
-    }
-    case 'GET /api/assets':
-      // Big downloads Echo fetches by itself on first run, for the setup wizard's progress bar.
-      return sendJson(res, { voice: voiceStatus(), whisper: { ready: engines().whisper.available } });
-    case 'GET /api/update':
-      return sendJson(res, updater.status());
-    case 'POST /api/update/check':
-      return sendJson(res, await updater.check());
-    case 'POST /api/update/apply': {
-      // Answers once the new version is downloaded, verified and swapped in; then Echo restarts.
-      const out = await updater.apply({ restart: false });
-      sendJson(res, { ok: true, ...out });
-      if (out.updated) gracefulRestart(`to install Echo ${out.to}`);
-      return;
-    }
-    case 'POST /api/update/rollback': {
-      const { pin } = await readJson(req);
-      if (!selfImprove.checkPin(pin)) return sendJson(res, { error: 'Wrong PIN.' }, 403);
-      const out = updater.rollback({ restart: false });
-      sendJson(res, { ok: true, ...out });
-      gracefulRestart(`to go back to Echo ${out.to}`);
-      return;
-    }
-    case 'GET /api/self/status':
-      return sendJson(res, selfImprove.status());
-    case 'POST /api/self/confirm': {
-      const task = await selfImprove.confirmUnlock(await readJson(req));
-      dispatcher.notify(`The user confirmed self-improve mode in the window. Self-improvement task ${task.id} has started on a separate branch.`);
-      return sendJson(res, { ok: true, taskId: task.id });
-    }
-    case 'POST /api/self/cancel':
-      selfImprove.cancelRequest();
-      return sendJson(res, { ok: true });
-    case 'POST /api/self/lock':
-      selfImprove.lock();
-      return sendJson(res, { ok: true });
-    case 'POST /api/self/pin': {
-      const { newPin, currentPin } = await readJson(req);
-      selfImprove.setPin(newPin, currentPin);
-      broadcastSelf();
-      return sendJson(res, { ok: true });
-    }
-    case 'GET /api/self/diff': {
-      const t = tasks.get(url.searchParams.get('taskId'));
-      if (!t?.self?.review) return sendJson(res, { error: 'No review for that task' }, 404);
-      return sendJson(res, t.self.review);
-    }
-    case 'POST /api/self/merge': {
-      const { taskId, pin } = await readJson(req);
-      const result = await selfImprove.approveMerge(taskId, { pin });
-      sendJson(res, { ok: true, ...result });
-      gracefulRestart(`to apply self-improvement ${taskId}`);
-      return;
-    }
-    case 'POST /api/self/discard': {
-      const { taskId } = await readJson(req);
-      await selfImprove.discard(taskId);
-      return sendJson(res, { ok: true });
-    }
-    default:
-      return sendJson(res, { error: 'Not found' }, 404);
-  }
-}
-
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url || '/', 'http://localhost');
   if (url.pathname.startsWith('/api/')) {
     api(req, res, url).catch((e) => {
       console.error('[api]', e.message);
@@ -323,157 +119,112 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  const file = path.join(PUBLIC, url.pathname === '/' ? 'index.html' : path.normalize(url.pathname));
-  if (!file.startsWith(PUBLIC) || !fs.existsSync(file)) {
-    res.writeHead(404).end('Not found');
-    return;
-  }
-  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
-  fs.createReadStream(file).pipe(res);
+  serveStatic(res, url);
 });
-
-/* ---------- WebSocket ---------- */
-const wss = new WebSocketServer({ server, verifyClient: ({ req }) => originOk(req) });
-const slim = (t) => ({
-  ...t,
-  log: undefined,
-  result: undefined,
-  logTail: t.log.slice(-60),
-  steps: t.log.filter((e) => e.kind === 'tool').length,
-  files: tasks.filesTouched(t).slice(0, 12),
-  live: tasks.isLive(t.id),
-  self: t.self ? { ...t.self, review: t.self.review ? { ...t.self.review, diff: undefined } : null } : null,
-});
-const broadcast = (msg) => {
-  const data = JSON.stringify(msg);
-  for (const c of wss.clients) if (c.readyState === 1) c.send(data);
-};
-const broadcastSelf = () => broadcast({ type: 'self_status', status: selfImprove.status() });
-
-wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({ type: 'snapshot', tasks: tasks.list().map(slim), projects: listProjects(), busy: dispatcher.busy, self: selfImprove.status(), costs: costSummary(), messageConfirms: quick.pendingList(), update: updater.status() }));
-  ws.on('message', async (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(String(raw));
-    } catch {
+// The Echo Chrome extension (extension/, lib/browser.js) connects on its own path, with its
+// pairing code; only a Chrome extension's origin gets in, never a web page.
+const browserWss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
+browserWss.on('connection', (ws) => dispatcher.browser.extension?.attach(ws));
+dispatcher.browser.extension?.on('status', (st) => broadcast({ type: 'browser', ...st }));
+// Connected, dropped, turned away: on the timeline, so "the extension never connected" can be told
+// from "it kept being refused" or "it dropped when Echo restarted" after the fact.
+dispatcher.browser.extension?.on('link', (e) => timeline('server', `browser.${e.event}`, e.why ? { why: String(e.why).slice(0, 60) } : {}));
+// The Echo panel in Adobe XD (integrations/xd-bridge, lib/xd.js) on its own path, with its token.
+const xdWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+xdWss.on('connection', (ws) => dispatcher.xd.attach(ws));
+xdToken(); // made now, so the file is there to copy into the panel before XD ever connects
+server.on('upgrade', (req, socket, head) => {
+  const { pathname, searchParams } = new URL(req.url || '/', 'http://localhost');
+  if (pathname === '/ws/body') {
+    // The Mac app's own line: only with the token from data/self/body-token, and never a web page.
+    if (req.headers.origin || !tokenOk(searchParams.get('token'), bodyToken())) {
+      // On the timeline (lib/timeline.ts), so "Echo has no hands" can be told from "the app never tried".
+      timeline('server', 'body.refused', { reason: req.headers.origin ? 'origin' : 'token' });
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
       return;
     }
-    try {
-      switch (msg.type) {
-        case 'user_text': {
-          // Typed text (with any attached images) goes straight through; browser-recognized
-          // speech gets corrected first.
-          const images = msg.typed ? resolveAttachments(msg.images) : [];
-          const typedText = String(msg.text || '').trim();
-          if (msg.typed && (typedText || images.length)) {
-            broadcast({ type: 'heard', text: typedText, typed: true, images: images.map((i) => i.url) });
-            logConvo('User', typedText + (images.length ? ` _(attached: ${images.map((i) => i.path).join(', ')})_` : ''));
-            dispatcher.send(typedText, {}, images);
-          } else if (!msg.typed && msg.text?.trim()) {
-            await handleUtterance(msg.text.trim(), { engine: 'browser', lowOverall: typeof msg.confidence === 'number' && msg.confidence < 0.6 });
-          }
-          break;
-        }
-        case 'interrupt':
-          dispatcher.interrupt();
-          break;
-        case 'voice_busy':
-          // The page is speaking or hearing the user: task events wait (lib/dispatcher.js).
-          dispatcher.setVoiceBusy(ws, Boolean(msg.busy));
-          break;
-        case 'new_conversation':
-          dispatcher.newConversation();
-          broadcast({ type: 'say', text: 'Starting a fresh conversation.' });
-          break;
-        case 'approve':
-          // approvalId (optional) names the request the user saw; a click on an already
-          // answered or replaced request is ignored quietly.
-          try {
-            tasks.resolveApproval(msg.taskId, msg.allow, { similar: msg.similar, scope: msg.scope, approvalId: msg.approvalId, by: 'window' });
-          } catch (e) {
-            if (e.code !== 'stale') throw e;
-            ws.send(JSON.stringify({ type: 'approval_stale', taskId: msg.taskId, approvalId: msg.approvalId ?? null }));
-          }
-          break;
-        case 'approve_many': {
-          // A grouped card: [{ taskId, approvalId }]. Answers each one that's still pending.
-          const items = (Array.isArray(msg.items) ? msg.items : []).filter((i) => i && i.taskId != null);
-          const r = tasks.resolveMany(items, Boolean(msg.allow), { similar: msg.similar, scope: msg.scope, by: 'window' });
-          for (const s of r.skipped) ws.send(JSON.stringify({ type: 'approval_stale', taskId: s.taskId, approvalId: items.find((i) => i.taskId === s.taskId)?.approvalId ?? null }));
-          break;
-        }
-        case 'message_confirm':
-          // The Send / Cancel card for a quick iMessage.
-          try {
-            await quick.resolvePending(String(msg.id), Boolean(msg.send), 'window');
-          } catch (e) {
-            if (e.code !== 'stale') throw e;
-            ws.send(JSON.stringify({ type: 'message_resolved', id: msg.id, stale: true }));
-          }
-          break;
-        case 'stop_task':
-          await tasks.stop(msg.taskId);
-          break;
-        case 'follow_up':
-          tasks.followUp(msg.taskId, msg.text);
-          break;
-        case 'open_file': {
-          // Only files this task actually created or saved can be opened.
-          const t = tasks.get(msg.taskId);
-          const file = t && tasks.filesTouched(t).find((f) => f.path === msg.path);
-          if (file) execFile('open', [file.path]);
-          break;
-        }
-        case 'open_terminal': {
-          const t = tasks.get(msg.taskId);
-          if (t) openTerminal(t.cwd, `tail -n 200 -f ${JSON.stringify(tasks.logPath(t.id))}`);
-          break;
-        }
-      }
-    } catch (e) {
-      ws.send(JSON.stringify({ type: 'error', text: e.message }));
+    bodyWss.handleUpgrade(req, socket, head, (ws) => bodyWss.emit('connection', ws, req));
+    return;
+  }
+  if (pathname === '/ws/browser') {
+    const refusal = extensionRefusal({ origin: req.headers.origin, url: req.url }, pairingCode());
+    if (refusal) {
+      // Remembered, so "not connected" can say the code was wrong rather than guess.
+      dispatcher.browser.extension?.refused(refusal);
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
     }
-  });
-  ws.on('close', () => dispatcher.setVoiceBusy(ws, false));
+    browserWss.handleUpgrade(req, socket, head, (ws) => browserWss.emit('connection', ws, req));
+    return;
+  }
+  if (pathname === '/ws/xd') {
+    // Only the plugin: the token from data/self/xd-token, and never a web page (anything with an Origin).
+    const refusal = xdRefusal({ origin: req.headers.origin, url: req.url }, xdToken());
+    if (refusal) {
+      dispatcher.xd.refused(refusal);
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    xdWss.handleUpgrade(req, socket, head, (ws) => xdWss.emit('connection', ws, req));
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 
-/* ---------- speech: correct, log, dispatch ---------- */
-const sttLog = path.join(config.dataDir, 'stt-log.jsonl');
-const RECENT_CLIPS = 20;
 
-/** A URI-encoded JSON request header, or undefined. */
-function headerJson(req, name) {
-  try {
-    const v = req.headers[name];
-    return typeof v === 'string' && v ? JSON.parse(decodeURIComponent(v)) : undefined;
-  } catch {
-    return undefined;
+// Screen looks and pointing go to the Mac app's page when it's open (it can capture on its own);
+// otherwise every page shows a "share your screen" card (lib/screen.js).
+const nativePages = new Set();
+screen.nativeClients = () => [...nativePages].filter((c) => c.readyState === 1).length + bodyClients().length;
+/** The Mac app's own lines to the server (/ws/body, lib/bodylink.ts): requests go straight to it. */
+const bodyWss = new WebSocketServer({ noServer: true });
+const bodyClients = () => [...bodyWss.clients].filter((c) => c.readyState === 1);
+// When the line came up and went (how long it lasted), and what the app noted meanwhile: key
+// presses, the mic opening, speech starting and ending (lib/timeline.ts decides what is kept).
+bodyWss.on('connection', (ws) => {
+  const since = Date.now();
+  timeline('server', 'body.connect');
+  ws.on('error', () => {});
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(String(raw));
+      if (msg?.type === 'tl') timelineIngest('app', msg.events);
+    } catch {}
+  });
+  ws.on('close', (code) => timeline('server', 'body.drop', { code, ms: Date.now() - since }));
+});
+screen.on('request', (r) => {
+  const data = JSON.stringify({ type: 'screen_request', ...r });
+  // Straight to the Mac app when its own line is up, and then ONLY there (so nothing runs twice);
+  // otherwise through its page, as before (an older app).
+  const body = r.native ? bodyClients() : [];
+  if (body.length) {
+    body[0].send(data);
+    // The page still shows its "Looking" chip (until screen_done): told, never asked to do it.
+    if (r.kind === 'look') for (const c of nativePages) if (c.readyState === 1) c.send(JSON.stringify({ type: 'screen_request', id: r.id, kind: r.kind, notice: true }));
+    return;
   }
-}
-/**
- * @param {string} raw
- * @param {{ uncertain?: Array<{ word: string, confidence: number }>, engine?: string, sttMs?: number, lowOverall?: boolean, audio?: object, stages?: object }} [opts]
- */
-async function handleUtterance(raw, { uncertain = [], engine, sttMs = 0, lowOverall = false, audio = undefined, stages = undefined } = {}) {
-  if (isBlankText(raw)) return { empty: true, engine };
-  // A quick "Sure, checking." right away, while the words are corrected and the reply is written.
-  dispatcher.acknowledge(raw);
-  const s = getSettings();
-  const fixed = await corrector.correct(raw, { uncertain, recent, smart: s.smartCorrection });
-  const entry = { at: new Date().toISOString(), engine, sttMs, fixMs: fixed.ms, raw, text: fixed.text, changes: fixed.changes, unsure: fixed.unsure, smart: fixed.smart, timedOut: Boolean(fixed.timedOut), ...(fixed.rejected ? { rejected: fixed.rejected } : {}), ...(audio ? { audio } : {}), ...(stages ? { stages } : {}) };
-  fs.appendFileSync(sttLog, JSON.stringify(entry) + '\n');
-  broadcast({ type: 'heard', text: fixed.text, raw: fixed.text !== raw ? raw : null, unsure: fixed.unsure, engine, ms: sttMs + fixed.ms });
-  logConvo('User', fixed.text !== raw ? `${fixed.text}  _(heard: "${raw}")_` : raw);
-  dispatcher.send(fixed.text, { raw, unsure: fixed.unsure, lowOverall });
-  return entry;
-}
+  for (const c of wss.clients) if (c.readyState === 1 && (!r.native || nativePages.has(c))) c.send(data);
+});
+screen.on('done', ({ id }) => broadcast({ type: 'screen_done', id }));
+// The light is let go, or held to ask (docs/firefly-protocol.md): to the Mac app, the way its requests go.
+screen.on('firefly', (m) => {
+  const data = JSON.stringify({ type: 'firefly', ...m });
+  const body = bodyClients();
+  for (const c of body.length ? [body[0]] : nativePages) if (c.readyState === 1) c.send(data);
+});
+wss.on('connection', pageConnection({ voice, tasks, selfImprove, quick, screen, dispatcher, computer, updater, speech, broadcast, notifyTask, nativePages }));
 
 /* ---------- wiring ---------- */
 let replyBuf = '';
-dispatcher.on('say', (text) => {
+dispatcher.on('say', (text, { speak = text, trace = undefined } = {}) => {
   logConvo('Assistant', text);
-  broadcast({ type: 'say', text });
+  // speak: what's said out loud, when it isn't the text as written.
+  // id: the line's name for the voice tracker (lib/voicestate.js): the page says when it starts and ends.
+  broadcast({ type: 'say', id: voice.line(speak), text, ...(speak !== text ? { speak } : {}), ...(trace && { trace }) });
 });
 dispatcher.on('say_start', () => {
   replyBuf = '';
@@ -485,13 +236,49 @@ dispatcher.on('say_delta', (text) => {
 });
 dispatcher.on('say_end', () => {
   if (replyBuf.trim()) logConvo('Assistant', replyBuf.trim());
+  // The names in it are what the user is likely to say next (lib/recentterms.js).
+  recentTerms.noteReply(replyBuf);
   broadcast({ type: 'say_end' });
 });
 // `prev`: the piece of the same reply spoken just before, so the voice carries its intonation on.
-dispatcher.on('speak', (text, { prev = '' } = {}) => broadcast({ type: 'speak', text, ...(prev && { prev }) }));
+// `id`: the line's name for the voice tracker; whoever waits for the line to end gave it one already (lib/computer.js speak).
+// The lines of the reply being spoken, by their voice ids: at the user's next message the assistant
+// is told which of them were never heard (lib/heardreport.js).
+/** @type {{ trace: string, lines: Array<{ id: string, text: string }> }} */
+let spokenReply = { trace: '', lines: [] };
+dispatcher.on('speak', (text, { prev = '', trace = undefined, id = voice.line(text) } = {}) => {
+  if (String(trace || '') !== spokenReply.trace) spokenReply = { trace: String(trace || ''), lines: [] };
+  spokenReply.lines.push({ id, text: String(text) });
+  broadcast({ type: 'speak', id, text, ...(prev && { prev }), ...(trace && { trace }) });
+});
+dispatcher.heardReport = () => {
+  const lines = spokenReply.lines.map((l) => ({ text: l.text, fate: voice.fate(l.id) }));
+  spokenReply = { trace: '', lines: [] };
+  return voice.silent ? '' : heardNote(lines);
+};
 dispatcher.on('activity', (text) => broadcast({ type: 'activity', text }));
+// The reply ended waiting for an answer: the page listens for it briefly (public/autolisten.js).
+// A reply that ends on a question with a small set of answers carries them as chips (lib/quickreplies.js),
+// for when the user is typing. Never while a card waits for a yes: that has its own buttons.
+// Two replies in a row that only say "I didn't catch that": Echo is hearing something that is not
+// for it, so it rests until its name (lib/listenmode.js).
+let unclearRun = 0;
+dispatcher.on('reply_end', ({ awaitsReply }) => {
+  unclearRun = onlyDidntCatch(dispatcher.lastReply) ? unclearRun + 1 : 0;
+  if (unclearRun >= UNCLEAR_RESTS_AFTER && getSettings().listenMode === 'listening') {
+    unclearRun = 0;
+    setListenMode('resting', 'unclear');
+  }
+  const chips = awaitsReply && !computer.pending.size && !quick.pendingList().length ? quickReplies(dispatcher.lastReply) : [];
+  broadcast({ type: 'reply_end', awaitsReply, ...(chips.length ? { chips } : {}) });
+});
+// "Stop" while Echo drives: she stops talking too.
+dispatcher.on('thinking', () => broadcast({ type: 'thinking' }));
+dispatcher.on('hush', () => broadcast({ type: 'hush' }));
+// The assistant decided a sentence wasn't for Echo and stayed quiet: the page shows it, like any other drop.
+dispatcher.on('dropped', ({ reason, trace }) => broadcast({ type: 'dropped', reason, ...(trace && { trace }) }));
 dispatcher.on('busy', (busy) => broadcast({ type: 'busy', busy }));
-dispatcher.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assistant', usd) }));
+dispatcher.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('dispatcher', usd) }));
 tasks.on('cost', (t, usd) => broadcast({ type: 'costs', costs: addCost('workers', usd) }));
 dispatcher.on('error', (e) => {
   console.error('[dispatcher]', e.message);
@@ -499,10 +286,6 @@ dispatcher.on('error', (e) => {
   broadcast({ type: 'error', text: plain === e.message ? `Assistant error: ${e.message}` : plain });
 });
 
-const notifyTask = (t, textIn) => {
-  logConvo('Event', textIn);
-  dispatcher.notify(textIn);
-};
 tasks.on('update', (t) => broadcast({ type: 'task', task: slim(t) }));
 tasks.on('log', (t, entry) => broadcast({ type: 'task_log', taskId: t.id, entry }));
 // Approvals are relayed after a short pause, grouped, and only if still unanswered (lib/approvals.js).
@@ -522,7 +305,12 @@ tasks.on('approval', (t) => {
 tasks.on('finished', (t) => {
   if (t.kind !== 'self') taskCard(t, t.status, { text: firstSentence(t.summary) || (t.status === 'done' ? 'Finished.' : 'Stopped with an error.') });
 });
-tasks.on('stopped', (t) => taskCard(t, 'stopped', { text: 'Stopped.' }));
+tasks.on('stopped', (t) => taskCard(t, 'stopped', { text: t.overBudget ? 'Stopped at its cost limit.' : 'Stopped.' }));
+// A task stopped at its cost limit (Settings): the user decides whether it goes on.
+tasks.on('budget', (t, limit) => notifyTask(t, `Task ${t.id} (${t.project}) stopped at the $${limit} limit for one task (Settings → Account & AI). Tell the user in a sentence and ask whether to continue it (follow_up goes on from where it stopped).`));
+// A worker's temporary screenshot goes as soon as its task ends (lib/screen.js).
+tasks.on('finished', (t) => screen.releaseTask(t.id));
+tasks.on('stopped', (t) => screen.releaseTask(t.id));
 tasks.on('approval_resolved', (t, r) => broadcast({ type: 'approval_resolved', taskId: t.id, approvalId: r.id, allowed: r.allowed, by: r.by }));
 tasks.on('finished', (t) => {
   if (t.kind === 'self') return; // announced once the review is ready
@@ -531,16 +319,75 @@ tasks.on('finished', (t) => {
     t,
     `Task ${t.id} (${t.project}) ${t.status === 'done' ? 'finished' : 'failed'}. Spoken summary: ${t.summary}` +
       (files.length ? ` Saved files: ${files.join(', ')}.` : '') +
-      ' Full details are available with get_task.'
+      ' Full details are available with get_task.',
+    // Just for the user's information: with the policy flag it waits for a natural moment.
+    { fyi: true },
   );
 });
 
 quick.on('confirm_request', (request) => broadcast({ type: 'message_confirm', request }));
+
+// Lessons and computer use (lib/computer.js).
+computer.on('state', (st) => {
+  // The app Echo is working in has words of its own to expect ("pivot table" in Excel).
+  recentTerms.setApp(st.app || '');
+  broadcast({ type: 'computer_state', ...st });
+});
+// The critic's model calls (lib/agent/critic.js) count with the assistant's.
+computer.on('cost', (usd) => broadcast({ type: 'costs', costs: addCost('assistant', usd) }));
+computer.on('lesson_card', (c) => broadcast({ type: 'lesson_card', ...c }));
+// An explanation on screen moved on (lib/explain.js): its one card in the chat follows.
+computer.on('explain_card', (c) => broadcast({ type: 'explain_card', ...c }));
+computer.on('confirm_request', (request) => broadcast({ type: 'computer_confirm', request }));
+computer.on('undo_offer', (offer) => broadcast({ type: 'undo_offer', offer }));
+computer.on('undo_done', (r) => broadcast({ type: 'undo_done', ...r }));
+computer.on('confirm_resolved', (r) => {
+  broadcast({ type: 'computer_resolved', ...r });
+  if (r.by === 'window' && !r.allowed) notifyTask(null, `The user cancelled "${r.what}" in the window. Don't do it.`);
+});
+// Play-along (lib/computer.js playAlong): the user clicked in the game, so Echo looks and takes
+// its turn. One call waits at a time, and it is dropped if the game ended meanwhile.
+computer.on('play_move', async ({ what, retry }) => {
+  // The board is looked at here and sent along, so Echo's move is one call, not a look and then a move.
+  const board = await computer.playSnapshot();
+  if (!computer.play) return;
+  dispatcher.notify(
+    board
+      ? `[play-along] ${retry ? `The user clicked while you were making your move in ${what}, so your move may not have gone in` : `The user just clicked in ${what}: probably their move`}. The board as it is right now is shown with this message (its text and its picture), so do NOT look again: act from it. If it is your turn, take it with ONE action and say a few words at most about your own move, or nothing. If nothing changed, or it is still their turn, stay quiet as for an event that needs no word. If the game is over, say the result in one line. No advice, no hints about your plan, and never ask them to say or type anything.`
+      : `[play-along] ${retry ? `The user clicked while you were making your move in ${what}, so your move may not have gone in` : `The user just clicked in ${what}: probably their move`}. Look once (look_at_screen, with the picture if the board has no labels). If it is your turn, take it with ONE action and say a few words at most about your own move, or nothing. If nothing changed, or it is still their turn, stay quiet as for an event that needs no word. If the game is over, say the result in one line. No advice, no hints about your plan, and never ask them to say or type anything.`,
+    { key: 'play', ttlMs: 60 * 1000, isStale: () => !computer.play, onStart: () => computer.playTurn(), ...(board ? { blocks: board } : {}) },
+  );
+});
+dispatcher.on('show_sky', (play) => broadcast({ type: 'show_sky', play: play === true }));
+// A watch began or ended: the Mac app parks a small light on that window, or takes it away.
+dispatcher.on('watch_light', (w) => broadcast({ type: 'watch_light', id: String(w.id), app: String(w.app).slice(0, 60), on: w.on === true, done: w.done === true }));
+dispatcher.on('pin_note', (text) => broadcast({ type: 'pin_note', text: String(text).slice(0, 160) }));
+dispatcher.on('quiet_mode', (on) => {
+  // Quiet mode: the pages speak nothing (and stop what they were saying), and no step waits for a voice.
+  voice.silent = on;
+  if (on) broadcast({ type: 'hush' });
+  broadcast({ type: 'quiet_mode', on, ...(on ? { text: QUIET_MODE_LINE } : {}) });
+});
+computer.on('paused', (e) => {
+  // Playing along, their click was a move: the step is tried again by itself, and nothing is said.
+  if (e?.play) return;
+  // She stops talking about the step, says so in three words, and listens for what's next.
+  broadcast({ type: 'hush' });
+  broadcast({ type: 'speak', id: voice.line(TAKE_OVER_LINE), text: TAKE_OVER_LINE });
+  logConvo('Assistant', TAKE_OVER_LINE);
+});
+computer.on('aborted', ({ reason }) => {
+  broadcast({ type: 'computer_state', driving: false, aborted: true, reason });
+  // They stopped it themselves (said stop, Esc, the window's Stop, Settings): nothing to tell them,
+  // so no turn and no "okay, I've stopped". The assistant hears it with their next message.
+  logConvo('Event', `Echo stopped using the computer (${reason}).`);
+  dispatcher.noteForNext(`(Echo stopped using the computer because the user stopped it (${reason}). Don't carry on with it unless they ask again.)`);
+});
 quick.on('confirm_resolved', (r) => {
   broadcast({ type: 'message_resolved', ...r });
   if (r.by === 'voice') return; // the assistant already knows
-  const what = r.sent ? 'was sent' : r.error ? `failed to send: ${r.error}` : r.by === 'expired' ? 'expired unanswered and was not sent' : 'was cancelled in the window, not sent';
-  notifyTask(null, `The message to ${r.to} (${r.masked}) ${what}.${r.sent ? ' Confirm it in a few words.' : ''}`);
+  const what = r.sent ? `was handed to Messages (${r.delivery || "sent; delivery can't be checked from here"})` : r.error ? `failed to send: ${r.error}` : r.by === 'expired' ? 'expired unanswered and was not sent' : 'was cancelled in the window, not sent';
+  notifyTask(null, `The message to ${r.to} (${r.masked}) ${what}.${r.sent ? ' Say that in a few words; only "delivered" means they got it.' : ''}`);
 });
 
 selfImprove.on('unlock_request', (request) => broadcast({ type: 'self_unlock_request', request }));
@@ -577,7 +424,7 @@ async function gracefulRestart(reason) {
 
 /** Exit so the supervisor starts a fresh copy (or hand over to a new supervisor if there isn't one). */
 function restartProcess() {
-  if (process.env.VOICEOPS_SUPERVISED) {
+  if (process.env.ECHO_SUPERVISED) {
     // Tells the supervisor this exit is a restart even if the exit status gets lost
     // (a native module aborting during exit once turned a restart into a false rollback).
     // Exit once the message is out (or after a second, whichever comes first).
@@ -588,12 +435,12 @@ function restartProcess() {
     return;
   }
   // Started without the supervisor (e.g. plain `node server.js`): hand over to one.
-  const out = fs.openSync(path.join(config.logDir, 'voiceops.log'), 'a');
+  const out = fs.openSync(path.join(config.logDir, LOG), 'a');
   spawn(process.execPath, ['supervisor.js'], {
     cwd: APP_DIR,
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, VOICEOPS_WAIT_PORT_FREE: '1' },
+    env: { ...process.env, ECHO_WAIT_PORT_FREE: '1' },
   }).unref();
   process.exit(0);
 }
@@ -622,27 +469,99 @@ async function shutdown(signal) {
   if (restarting) return;
   restarting = true;
   const checkpointed = await tasks.checkpointAll();
-  if (checkpointed.length) console.log(`[voiceops] paused tasks ${checkpointed.join(', ')}; they'll resume on the next start`);
+  if (checkpointed.length) console.log(`[echo] paused tasks ${checkpointed.join(', ')}; they'll resume on the next start`);
   process.exit(signal === 'SIGINT' ? 130 : 0);
+}
+/**
+ * Quit Echo in the Mac app (POST /api/shutdown): pause running tasks like a kill does, then stop
+ * for good. The app has already been told "ok", so nothing may stop this: not a restart that is
+ * under way (Echo came back instead of quitting), not a task that can't be paused.
+ */
+async function quit() {
+  restarting = true;
+  await quitAfter(async () => {
+    const checkpointed = await tasks.checkpointAll();
+    if (checkpointed.length) console.log(`[echo] quit: paused tasks ${checkpointed.join(', ')}; they'll resume on the next start`);
+  });
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-/** The acknowledgements and fillers, rendered ahead in the chosen voice so they play instantly. */
+/** Fixed lines Echo says (taking over), rendered ahead in the chosen voice so they play instantly. */
 function prewarmVoice(s = getSettings()) {
-  if (s.ttsProvider !== 'kokoro') return;
-  prewarmPhrases([...Object.values(ACKS).flat(), ...Object.values(FILLERS).flat()], { voice: s.voice, speed: s.speed }).catch(() => {});
+  // With a premium voice, Kokoro is the backup, so its voice is the one to have ready.
+  const voice = s.ttsProvider === 'kokoro' ? s.voice : ['elevenlabs', 'cartesia'].includes(s.ttsProvider) ? s.fallbackVoice : null;
+  if (!voice) return;
+  prewarmPhrases([TAKE_OVER_LINE], { voice, speed: s.speed }).catch(() => {});
 }
 
+/**
+ * The premium voice ran out of free characters (or came back): Settings updates, and the
+ * assistant mentions it once. Failures and a refused key show in Settings without a mention,
+ * except a refused key, which you'd need to fix.
+ */
+voiceBudget.onChange = (provider, { why, prevWhy, until }) => {
+  broadcast({ type: 'voiceBudget', budget: voiceBudget.status() });
+  if (getSettings().ttsProvider !== provider) return;
+  const name = provider === 'elevenlabs' ? 'ElevenLabs' : 'Cartesia';
+  const when = until ? new Date(until).toLocaleString('en-US', { timeZone: config.timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  if (why === 'free_used_up' || why === 'quota') {
+    dispatcher.notify(`The premium voice (${name}) has used up its free characters for this period, so you're now speaking with the free local voice (Kokoro)${when ? ` until about ${when}, when they come back` : ''}. Nothing is being charged. Mention this briefly when the user is next around.`);
+  } else if (why === 'bad_key') {
+    dispatcher.notify(`The premium voice (${name}) refused its API key, so you're speaking with the free local voice (Kokoro). The key in the .env file may be wrong or revoked. Mention this briefly.`);
+  } else if (!why && (prevWhy === 'free_used_up' || prevWhy === 'quota')) {
+    dispatcher.notify(`The premium voice (${name}) has its free characters again, so you're speaking with it again. Mention it briefly if it comes up.`);
+  }
+  console.log(`[voice] ${provider} ${why ? `resting: ${VOICE_WHY[why] || why}` : 'back'}`);
+};
+
 /* ---------- startup ---------- */
-server.listen(config.port, '127.0.0.1', () => {
+/**
+ * Start listening. Run as a program (node server.js, the supervisor) it starts by itself with
+ * everything; a test imports server.js and calls start({ port: 0, boot: false }): a free port,
+ * and no Whisper, voice, task resumes or update checks (lib's own tests cover those).
+ * @param {{ port?: number, boot?: boolean }} [o]
+ * @returns {Promise<number>} the port it listens on
+ */
+export function start({ port = config.port, boot = true } = {}) {
+  // The token the Mac app's own line presents (lib/bodylink.ts): there before it connects.
+  bodyToken();
+  return new Promise((resolve) => {
+    server.listen(port, '127.0.0.1', () => {
+      if (boot) bootUp();
+      else dispatcher.start();
+      const addr = server.address();
+      resolve(typeof addr === 'object' && addr ? addr.port : port);
+    });
+  });
+}
+
+/** Stop a server a test started: no new connections, the assistant's session closed. */
+export async function stop() {
+  for (const c of wss.clients) c.terminate();
+  for (const c of bodyWss.clients) c.terminate();
+  for (const c of browserWss.clients) c.terminate();
+  for (const c of xdWss.clients) c.terminate();
+  dispatcher.input?.close();
+  await new Promise((r) => server.close(() => r(undefined)));
+}
+
+/** Everything a full start does once Echo is listening. */
+function bootUp() {
+  migrateLegacyLog(config.logDir);
   dispatcher.start();
   warmUp();
   const s = getSettings();
   prewarmVoice(s);
-  if (resolveEngine(s.sttEngine) === 'whisper') startWhisper().then(() => console.log('[stt] local Whisper ready')).catch((e) => console.error('[stt]', e.message));
-  if (s.smartCorrection) corrector.warmUp();
+  // (Also when Apple's recognizer is the one in use: Whisper gives each sentence a second listen.)
+  if (resolveEngine(s.sttEngine) === 'whisper' || secondListenOn(s)) startWhisper().then(() => console.log('[stt] local Whisper ready')).catch((e) => console.error('[stt]', e.message));
   tasks.backfillTitles();
+  // Temporary screenshots left over from before (a crash, or past their time) are deleted.
+  sweepScreenShots();
+  setInterval(() => sweepScreenShots(), 5 * 60 * 1000).unref();
+  // Dropped-speech notes (debug) expire after a week, even with the setting since turned off.
+  pruneDroppedWords(config.dataDir);
+  setInterval(() => pruneDroppedWords(config.dataDir), 60 * 60 * 1000).unref();
   const resumed = tasks.resumeCheckpointed();
   const recent = (t) => Date.now() - Date.parse(t.updatedAt) < 24 * 3600 * 1000;
   const interrupted = tasks.list().filter((t) => t.status === 'interrupted' && recent(t) && !resumed.includes(t.id));
@@ -673,4 +592,16 @@ server.listen(config.port, '127.0.0.1', () => {
   updater.startSchedule();
   if (notes.length) dispatcher.notify(notes.join(' ') + ' Mention this briefly when the user is next around.');
   console.log(`Echo running at http://localhost:${config.port}  (${nowString()}; projects from ${config.roots.join(', ')})`);
-});
+}
+
+// Run as a program: start. Imported (a test): wait to be started.
+const isMain = (() => {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) start();
+
+export { server, dispatcher, tasks, computer, screen, quick, handleUtterance };

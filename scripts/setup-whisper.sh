@@ -3,7 +3,7 @@
 # plus a Whisper model. Free and fully offline afterwards.
 #   default     large-v3-turbo (quantized, ~550 MB, ~0.7s a sentence)
 #   --accurate  large-v3 as well (quantized, ~1.1 GB, ~1.7s a sentence). Only used when chosen with
-#               VOICEOPS_WHISPER_MODEL: on real speech it did worse than turbo (docs/speech-recognition.md).
+#               ECHO_WHISPER_MODEL: on real speech it did worse than turbo (docs/speech-recognition.md).
 set -e
 cd "$(dirname "$0")/.."
 command -v whisper-server >/dev/null || brew install whisper-cpp

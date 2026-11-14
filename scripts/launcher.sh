@@ -9,7 +9,10 @@
 #   scripts/launcher.sh [ECHO_FOLDER]      start (or just open) Echo
 #   scripts/launcher.sh --stop [FOLDER]    stop the copy this launcher started
 #
-# Port: VOICEOPS_PORT, else the number in ECHO_FOLDER/.echo-port, else 4777.
+# Echo is started detached (nohup), so it outlives this script. The Mac app stops it again when
+# you quit the app (macos/Sources/Server.swift), unless you chose to keep working in the background.
+#
+# Port: ECHO_PORT (or the old name VOICEOPS_PORT), else the number in ECHO_FOLDER/.echo-port, else 4777.
 # ECHO_NO_BROWSER=1 skips opening the browser and shows errors in the terminal instead of
 # a dialog (the Mac app and tests use it). ECHO_START_WAIT is how many seconds to wait for
 # Echo to answer (default 60).
@@ -41,10 +44,10 @@ APPLESCRIPT
 [ -f "$APP_DIR/supervisor.js" ] || fail "Echo's files aren't in $APP_DIR any more. Run install.command again to put them back."
 cd "$APP_DIR" || fail "Couldn't open the folder $APP_DIR."
 
-PORT="$VOICEOPS_PORT"
+PORT="${ECHO_PORT:-${VOICEOPS_PORT:-}}"
 [ -n "$PORT" ] || PORT="$(tr -dc '0-9' 2>/dev/null <"$APP_DIR/.echo-port")"
 [ -n "$PORT" ] || PORT=4777
-export VOICEOPS_PORT="$PORT"
+export ECHO_PORT="$PORT"
 URL="http://localhost:$PORT"
 LOG_DIR="$APP_DIR/logs"
 PID_FILE="$LOG_DIR/echo-launcher.pid"
@@ -83,12 +86,13 @@ open_browser() {
 
 if healthy; then open_browser; exit 0; fi
 
-# Find Node.js 20 or newer: the one the installer used, then Echo's own (~/.echo/node), then nvm,
+# Find Node.js 22.18 or newer (lib/nodeversion.js MIN_NODE: it runs Echo's TypeScript directly):
+# the one the installer used, then Echo's own (~/.echo/node), then nvm,
 # then Homebrew.
 node_ok() {
-  local major
-  major="$("${1:-node}" -p 'process.versions.node.split(".")[0]' 2>/dev/null)" || return 1
-  [ -n "$major" ] && [ "$major" -ge 20 ] 2>/dev/null
+  local v
+  v="$("${1:-node}" -p 'const [a, b] = process.versions.node.split(".").map(Number); a * 1000 + b' 2>/dev/null)" || return 1
+  [ -n "$v" ] && [ "$v" -ge 22018 ] 2>/dev/null
 }
 NODE=""
 saved="$(cat "$APP_DIR/.echo-node" 2>/dev/null)"
@@ -104,7 +108,7 @@ else
   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
   node_ok node && NODE="$(command -v node)"
 fi
-[ -n "$NODE" ] || fail "Echo needs Node.js 20 or newer, and it isn't installed. Double-click install.command in the Echo folder to set it up."
+[ -n "$NODE" ] || fail "Echo needs Node.js 22.18 or newer, and it isn't installed. Double-click install.command in the Echo folder to set it up."
 
 # Another supervisor running from this folder (started from Terminal, say). It may be between
 # restarts, so wait for it rather than starting a second copy on the same data.

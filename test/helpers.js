@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export function sandbox(name) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `voiceops-${name}-`));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `echo-${name}-`));
   const dirs = {
     root,
     data: path.join(root, 'data'),
@@ -16,13 +16,15 @@ export function sandbox(name) {
   };
   for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
   Object.assign(process.env, {
-    VOICEOPS_DATA_DIR: dirs.data,
-    VOICEOPS_LOG_DIR: dirs.logs,
-    VOICEOPS_ROOTS: dirs.projects,
-    VOICEOPS_RESEARCH_DIR: dirs.research,
-    VOICEOPS_WORKTREE_DIR: dirs.worktrees,
-    VOICEOPS_TZ: 'America/New_York',
-    VOICEOPS_TITLES: 'off', // no model calls from tests
+    ECHO_DATA_DIR: dirs.data,
+    ECHO_LOG_DIR: dirs.logs,
+    ECHO_ROOTS: dirs.projects,
+    ECHO_RESEARCH_DIR: dirs.research,
+    ECHO_WORKTREE_DIR: dirs.worktrees,
+    ECHO_TZ: 'America/New_York',
+    ECHO_TITLES: 'off', // no model calls from tests
+    ECHO_APP_DIRS: '', // no installed app names in the vocabulary (lib/vocab.js installedAppNames)
+    ECHO_SECOND_LISTEN: 'off', // no real Whisper run on test sentences (lib/secondlisten.js secondListenOn)
   });
   return dirs;
 }
@@ -68,3 +70,22 @@ export function fakeQuery(script) {
 export const say = (text) => ({ type: 'assistant', parent_tool_use_id: null, message: { id: Math.random().toString(36), content: [{ type: 'text', text }] } });
 export const result = (text, cost = 0.01) => ({ type: 'result', subtype: 'success', result: text, total_cost_usd: cost });
 export const bg = (tasks) => ({ type: 'system', subtype: 'background_tasks_changed', tasks });
+
+/**
+ * server.js and the parts split out of it (lib/server/*.js) as one text, for tests that check how
+ * the server is wired: they keep working when code moves between those files.
+ */
+export function serverSource() {
+  const root = path.resolve(import.meta.dirname, '..');
+  const dir = path.join(root, 'lib', 'server');
+  const files = [path.join(root, 'server.js'), ...fs.readdirSync(dir).filter((f) => f.endsWith('.js')).sort().map((f) => path.join(dir, f))];
+  return files.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+}
+
+/** public/app.js and the views split out of it (public/ui/*.js) as one text, like serverSource(). */
+export function pageSource() {
+  const pub = path.resolve(import.meta.dirname, '..', 'public');
+  const dir = path.join(pub, 'ui');
+  const files = [path.join(pub, 'app.js'), ...fs.readdirSync(dir).filter((f) => f.endsWith('.js')).sort().map((f) => path.join(dir, f))];
+  return files.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+}

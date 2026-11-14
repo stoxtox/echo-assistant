@@ -1,0 +1,24 @@
+{
+  // TypeScript for Echo's newer modules (*.ts), checked strictly. Node runs them as they are (type
+  // stripping, Node 22.18+), so only syntax that can be erased is allowed: no enums, no namespaces,
+  // no parameter properties. The older JavaScript is checked by jsconfig.json; both run in
+  // `npm run check`. See docs/adr/0001-stack.md.
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true
+  },
+  "include": ["lib/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+}

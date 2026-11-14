@@ -6,8 +6,8 @@ import {
   STEPS, EXAMPLES, DEFAULT_SUGGESTIONS, tourExamples, suggestionsFor, friendlyPath, folderName, pinProblem, splitVoiceName, ACCENTS,
 } from '../public/onboarding.js';
 
-test('the wizard has the ten steps, in order', () => {
-  assert.deepEqual([...STEPS], ['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
+test('the wizard has the eleven steps, in order', () => {
+  assert.deepEqual([...STEPS], ['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tryit', 'magic', 'tour']);
 });
 
 test('tour examples come from the chosen interests, topped up to at least four', () => {
@@ -68,7 +68,7 @@ test('the page has no secrets, home paths, phone numbers or emails in it', async
 
 test('index.html has the settings controls and the suggestions box app.js expects', () => {
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-  for (const id of ['suggestions', 'setBeginner', 'setSafe', 'projectsDirShow', 'changeFolder', 'runSetup', 'resetEcho', 'restartText', 'restartSub', 'helpSafety']) {
+  for (const id of ['suggestions', 'setSafe', 'resetEcho', 'restartText', 'restartSub']) {
     assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
   }
 });

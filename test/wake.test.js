@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { sandbox } from './helpers.js';
+import { sandbox, pageSource } from './helpers.js';
 
 sandbox('wake');
 const { matchWake, stripWake, wakeThreshold } = await import('../lib/wake.js');
@@ -37,11 +37,10 @@ test('sensitivity: strict needs "Hey", loose takes a near miss alone; a guess co
   assert.equal(matchWake('Echo', { lp: -1.5 }).wake, false, 'Whisper guessing');
 });
 
-test('settings: wake word on by default, sensitivity kept between 0 and 1', () => {
+test('settings: wake word on by default; its sensitivity is fixed', () => {
   assert.equal(getSettings().wakeWord, true);
   assert.equal(getSettings().wakeSensitivity, 0.5);
-  assert.equal(saveSettings({ wakeSensitivity: 7 }).wakeSensitivity, 1);
-  assert.equal(saveSettings({ wakeSensitivity: 'x' }).wakeSensitivity, 0.5);
+  assert.equal(saveSettings({ wakeSensitivity: 1 }).wakeSensitivity, 0.5, 'a saved value is ignored');
   assert.equal(saveSettings({ wakeWord: false }).wakeWord, false);
 });
 
@@ -142,10 +141,11 @@ test('a follow-up after her question needs no wake word', async () => {
   assert.deepEqual(log.cancels, ['no_follow_up']);
 });
 
-test('the page wires the wake word: muted while Echo speaks, a pill for mic off, the settings', () => {
-  const app = fs.readFileSync(path.join(import.meta.dirname, '../public/app.js'), 'utf8');
+test('the page wires the wake word: muted while Echo speaks, and one switch in Settings', () => {
+  const app = pageSource();
   const html = fs.readFileSync(path.join(import.meta.dirname, '../public/index.html'), 'utf8');
   assert.match(app, /if \(wakeListening\(\)\) \{\s*\/\/[^\n]*\n\s*if \(echo\)/, 'no wake audio while Echo is speaking');
   assert.match(app, /fetch\('\/api\/wake'/);
-  for (const id of ['wakePill', 'setWake', 'setWakeSens']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /id="setWake"/);
+  for (const id of ['setMicOff', 'setWakeSens']) assert.doesNotMatch(html, new RegExp(`id="${id}"`), id);
 });

@@ -324,11 +324,11 @@ test('the supervisor rolls a release update back when the new version fails to s
   fs.writeFileSync(path.join(app, 'server.js'), 'throw new Error("broken release")\n');
   fs.writeFileSync(path.join(prev, 'package.json'), '{"name":"echo","version":"1.0.0","type":"module"}');
   fs.writeFileSync(path.join(prev, 'server.js'), `import http from 'node:http';
-http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: 'good', pid: process.pid }))).listen(process.env.VOICEOPS_PORT, '127.0.0.1');\n`);
+http.createServer((req, res) => res.end(JSON.stringify({ ok: true, version: 'good', pid: process.pid }))).listen(process.env.ECHO_PORT, '127.0.0.1');\n`);
   fs.writeFileSync(path.join(data, 'update', 'pending-update.json'), JSON.stringify({ kind: 'update', from: '1.0.0', to: '1.1.0', at: new Date(Date.now() - 60000).toISOString() }));
   const port = await freePort();
   const sup = spawn(process.execPath, [SUPERVISOR], {
-    env: { ...process.env, VOICEOPS_APP_DIR: app, VOICEOPS_DATA_DIR: data, VOICEOPS_PORT: String(port), VOICEOPS_HEALTH_TIMEOUT_MS: '4000' },
+    env: { ...process.env, ECHO_APP_DIR: app, ECHO_DATA_DIR: data, ECHO_PORT: String(port), ECHO_HEALTH_TIMEOUT_MS: '4000' },
     stdio: 'pipe',
   });
   let output = '';

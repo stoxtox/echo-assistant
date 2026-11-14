@@ -1,4 +1,7 @@
-// The wake-word listener's local half: a cheap loudness detector that runs on every mic frame and
+// The wake-word listener for the page's own mic: the fallback in a plain browser tab. (In the Mac
+// app, its mic listens for "Hey Echo" under the one listening engine: macos/Sources/VoiceMath.swift
+// ListenMachine, with the same 1.8 s check and 6 s wait for the request.)
+// Its local half is a cheap loudness detector that runs on every mic frame and
 // never sends anything by itself. When a burst of speech starts, its first ~1.8 s (or less, if it
 // ends sooner) goes to `check`, which asks this machine's Whisper whether it opens with "Hey Echo"
 // (lib/wake.js). No match: the audio is dropped. A match: `onWake`, then the request is recorded

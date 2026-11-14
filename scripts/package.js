@@ -25,13 +25,13 @@ export const stampReadme = (text, { owner, repo }) => text.replaceAll('YOUR-GITH
 
 /** Top-level files and folders that make up the product. Everything else stays home. */
 export const INCLUDE = [
-  'lib/', 'public/', 'scripts/', 'test/', 'docs/', 'macos/',
-  'server.js', 'supervisor.js', 'package.json', 'package-lock.json', 'jsconfig.json',
+  'lib/', 'public/', 'scripts/', 'test/', 'docs/', 'macos/', 'extension/',
+  'server.js', 'supervisor.js', 'package.json', 'package-lock.json', 'jsconfig.json', 'tsconfig.json',
   'README.md', 'PUBLIC_README.md', 'GETTING_STARTED.md', 'SELF_IMPROVE.md', 'CHANGELOG.md', '.env.example', '.gitignore',
   'install.command', 'start.command', 'install-remote.sh', 'echo-release.json',
 ];
 /** Never copied, even inside an included folder. */
-const EXCLUDE = /(^|\/)(\.DS_Store|\.env(\.(?!example$)[^/]*)?|node_modules|\.git|HANDOFF\.md|[^/]*\.log)(\/|$)/;
+const EXCLUDE = /(^|\/)(\.DS_Store|\.env(\.(?!example$)[^/]*)?|node_modules|\.git|\.echo-dev|HANDOFF\.md|[^/]*\.log)(\/|$)/;
 
 /** The product's files, relative to the app folder: git's view if there is one (so ignored files never ship). */
 export function productFiles(appDir = APP_DIR) {

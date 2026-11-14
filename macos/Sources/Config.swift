@@ -34,7 +34,7 @@ enum AppConfig {
     return nil
   }()
 
-  /// The port: --port, ECHO_PORT or VOICEOPS_PORT, Echo's .echo-port file, else 4777 (Echo's default).
+  /// The port: --port, ECHO_PORT or the old VOICEOPS_PORT, Echo's .echo-port file, else 4777 (Echo's default).
   static let port: Int = {
     let env = ProcessInfo.processInfo.environment
     for raw in [argument("--port"), env["ECHO_PORT"], env["VOICEOPS_PORT"]] {
@@ -58,16 +58,71 @@ enum AppConfig {
 enum Prefs {
   private static let d = UserDefaults.standard
 
-  /// Leave Echo's server running after the app quits, so tasks keep going (the default).
-  static var keepServerRunning: Bool {
-    get { d.object(forKey: "KeepServerRunning") as? Bool ?? true }
-    set { d.set(newValue, forKey: "KeepServerRunning") }
+  /// "Keep working in the background after I quit": leave Echo's server running when the app
+  /// quits, so tasks keep going. Off unless you choose it: Quit means quit. (A new key, so the old
+  /// setting's default of "keep running" doesn't carry over.)
+  static var keepWorkingAfterQuit: Bool {
+    get { d.object(forKey: "KeepWorkingAfterQuit") as? Bool ?? false }
+    set { d.set(newValue, forKey: "KeepWorkingAfterQuit") }
   }
 
   /// The summon shortcut's id (see HotKey.presets). Default: Option-Space.
   static var hotKey: String {
     get { d.string(forKey: "HotKey") ?? "opt-space" }
     set { d.set(newValue, forKey: "HotKey") }
+  }
+
+  // Mirrors of Echo's settings (Settings → Screen), sent by the page, so they apply before it loads.
+  static var screenAware: Bool {
+    get { d.object(forKey: "ScreenAware") as? Bool ?? true }
+    set { d.set(newValue, forKey: "ScreenAware") }
+  }
+
+  static var pointer: Bool {
+    get { d.object(forKey: "Pointer") as? Bool ?? true }
+    set { d.set(newValue, forKey: "Pointer") }
+  }
+
+  /// The companion orb's size: "small" (22 pt), "medium" (28 pt, the mockup's, the default) or
+  /// "large" (34 pt). The old two-step setting (CompanionSize: small 28, medium 32) carries over as
+  /// the nearest new size.
+  static var orbSize: String {
+    get {
+      if let s = d.string(forKey: "OrbSize") { return CompanionMath.size(s) }
+      return d.string(forKey: "CompanionSize") == "medium" ? "large" : "medium"
+    }
+    set { d.set(CompanionMath.size(newValue), forKey: "OrbSize") }
+  }
+
+  /// Reduced motion for the companion and the caption pill: "system" (follow macOS), "on" or "off".
+  static var reduceMotion: String {
+    get { d.string(forKey: "ReduceMotion") ?? "system" }
+    set { d.set(["on", "off"].contains(newValue) ? newValue : "system", forKey: "ReduceMotion") }
+  }
+
+  /// The companion's eyes: on (the default) or off (the plain drop).
+  static var orbEyes: Bool {
+    get { d.object(forKey: "OrbEyes") as? Bool ?? true }
+    set { d.set(newValue, forKey: "OrbEyes") }
+  }
+
+  /// A few words beside the light saying what each step is (Settings → Companion): on by default.
+  static var stepCaptions: Bool {
+    get { d.object(forKey: "StepCaptions") as? Bool ?? true }
+    set { d.set(newValue, forKey: "StepCaptions") }
+  }
+
+  /// The companion's look: "auto" (Moon over a dark background, Glass over a light one),
+  /// "glass" or "moon". Anything older is Auto (CompanionMath.look).
+  static var companionLook: String {
+    get { d.string(forKey: "CompanionLook") ?? "auto" }
+    set { d.set(newValue, forKey: "CompanionLook") }
+  }
+
+  /// The push-to-talk chord (PushToTalk.chords). Default: hold Control + Option.
+  static var pttHotkey: String {
+    get { d.string(forKey: "PushToTalk") ?? "ctrl-opt" }
+    set { d.set(newValue, forKey: "PushToTalk") }
   }
 
   static var openAtLogin: Bool {
@@ -79,11 +134,77 @@ enum Prefs {
   }
 }
 
+/// Whether the companion and the caption pill should keep still: Echo's setting, or macOS's
+/// Reduce Motion when it's left on "system".
+enum Motion {
+  static var reduced: Bool {
+    switch Prefs.reduceMotion {
+    case "on": return true
+    case "off": return false
+    default: return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+  }
+}
+
+/// One clock for everything on screen that moves (the companion and the caption pill), in step
+/// with the display: 120 Hz on ProMotion screens, 60 elsewhere. It only runs while something is
+/// listening, so nothing ticks while Echo's overlays are hidden.
+final class FrameClock: NSObject {
+  static let shared = FrameClock()
+  private var subscribers: [ObjectIdentifier: (CFTimeInterval) -> Void] = [:]
+  private var link: AnyObject?
+  private var timer: Timer?
+
+  func add(_ owner: AnyObject, _ tick: @escaping (CFTimeInterval) -> Void) {
+    subscribers[ObjectIdentifier(owner)] = tick
+    start()
+  }
+
+  func remove(_ owner: AnyObject) {
+    subscribers.removeValue(forKey: ObjectIdentifier(owner))
+    if subscribers.isEmpty { stop() }
+  }
+
+  /// The screens changed or the Mac woke: the display link belongs to one display, which may be
+  /// gone or asleep, so make a fresh one on a display that's there now.
+  func rebuild() {
+    guard link != nil || timer != nil else { return }
+    stop()
+    start()
+  }
+
+  private func start() {
+    guard link == nil, timer == nil else { return }
+    if #available(macOS 14.0, *), let screen = NSScreen.main ?? NSScreen.screens.first {
+      let l = screen.displayLink(target: self, selector: #selector(fire))
+      l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+      l.add(to: .main, forMode: .common)
+      link = l
+    } else {
+      let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.fire() }
+      RunLoop.main.add(t, forMode: .common)
+      timer = t
+    }
+  }
+
+  private func stop() {
+    if #available(macOS 14.0, *) { (link as? CADisplayLink)?.invalidate() }
+    link = nil
+    timer?.invalidate()
+    timer = nil
+  }
+
+  @objc private func fire() {
+    let now = CACurrentMediaTime()
+    for tick in Array(subscribers.values) { tick(now) }
+  }
+}
+
 extension NSColor {
   /// Echo's page background (--bg in style.css), so the title bar and the page meet without a seam.
   static let echoBackground = NSColor(name: nil) { appearance in
     appearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua
-      ? NSColor(srgbRed: 0xFA / 255, green: 0xF7 / 255, blue: 0xF2 / 255, alpha: 1)
-      : NSColor(srgbRed: 0x0E / 255, green: 0x0D / 255, blue: 0x10 / 255, alpha: 1)
+      ? NSColor(srgbRed: 0xFF / 255, green: 0xFF / 255, blue: 0xFF / 255, alpha: 1)
+      : NSColor(srgbRed: 0x0A / 255, green: 0x0A / 255, blue: 0x0B / 255, alpha: 1)
   }
 }

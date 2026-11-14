@@ -10,7 +10,18 @@
 // helpers at the top (examples, suggestions, paths, PIN checks) have no DOM and are tested in
 // test/onboarding-ui.test.js.
 
-export const STEPS = /** @type {const} */ (['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tour']);
+// In the Mac app the talk key is the shortcut (Control and Option) from anywhere; in a browser tab it is Space.
+const IN_MAC_APP = Boolean(/** @type {any} */ (globalThis).webkit?.messageHandlers?.echoApp);
+const TALK_KEY = IN_MAC_APP ? '⌃⌥' : 'Space';
+
+export const STEPS = /** @type {const} */ (['welcome', 'claude', 'name', 'help', 'files', 'voice', 'talking', 'pin', 'permissions', 'tryit', 'magic', 'tour']);
+
+/** The three words to know, on the "magic words" step: how to call Echo, stop her, and learn. */
+export const MAGIC_WORDS = [
+  ['“Echo…”', 'Say my name first when I’m not already listening. After I ask you something, just answer.'],
+  ['“Stop”', 'Ends whatever I’m doing on the screen, at once. “Wait” holds the current step.'],
+  ['“Show me how”', 'I point at each step instead of clicking, so you learn it. “Just do it” switches back.'],
+];
 
 /** Short, friendly descriptions for the interest cards (titles come from the server). */
 export const INTEREST_INFO = {
@@ -137,7 +148,7 @@ export const ACCENTS = [
   ['en', 'Another English accent'],
 ];
 
-/* ---------- icons (24px line art in the sunset gradient) ---------- */
+/* ---------- icons (24px line art, in the text colour) ---------- */
 const ICONS = {
   errands: '<path d="M5.5 8h13l-1.1 11.2a1.5 1.5 0 0 1-1.5 1.3H8.1a1.5 1.5 0 0 1-1.5-1.3L5.5 8Z"/><path d="M9 10.5V7a3 3 0 0 1 6 0v3.5"/>',
   research: '<circle cx="10.5" cy="10.5" r="6"/><path d="m15.2 15.2 4.8 4.8"/><path d="M8.2 8.6a3 3 0 0 1 2.3-1.1"/>',
@@ -158,9 +169,18 @@ const ICONS = {
   keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 6.5l2.5 2.5M14 8.5l2 2"/>',
   sparkle: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.9L12 18.5l-1.8-5.8L4.5 10.8 10.2 9 12 3.5Z"/>',
+  screen: '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/><circle cx="12" cy="10.5" r="2.2"/>',
+  pointer: '<path d="M5 3.5v14l3.6-3.2 2.6 5.6 2.4-1.1-2.6-5.5 4.8-.3L5 3.5Z"/>',
 };
+
+/** The Mac app's own permissions (Settings → Screen too), shown in setup only inside the Mac app. */
+export const MAC_PERMS = [
+  { id: 'screen', icon: 'screen', title: 'Screen Recording', why: 'So I can look at your screen, only when you ask ("what\'s this error?"). Text is read on this Mac and secrets are blacked out first.' },
+  { id: 'accessibility', icon: 'pointer', title: 'Accessibility', why: 'So my pointer can find buttons and menus by name. I only point; I never click.' },
+  { id: 'input', icon: 'keyboard', title: 'Input Monitoring', why: 'So you can hold Control + Option anywhere to talk to me, even when my window is behind others.' },
+];
 const svg = (name, size = 22) =>
-  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="url(#sunsetSend)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 const PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a1 1 0 0 0 1.5.86l10.4-6.4a1 1 0 0 0 0-1.72L9.5 4.74A1 1 0 0 0 8 5.6Z"/></svg>';
 const STOP = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
 const CHECK = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -204,6 +224,9 @@ const CHIP = { idle: 'Not tested', busy: 'Checking…', ok: 'Works ✓', bad: 'N
  *   onFinish?: (settings: any) => void,
  *   onClose?: () => void,
  *   hush?: () => void,
+ *   isMac?: () => boolean,
+ *   toApp?: (msg: object) => void,
+ *   pointAt?: (el: Element, label: string) => void,
  * }} deps
  */
 export function createWizard(deps) {
@@ -265,7 +288,7 @@ export function createWizard(deps) {
       voice: s.ttsProvider === 'kokoro' && s.voice ? s.voice : 'af_heart',
       speed: Number(s.speed) || 1.05,
       handsFree: Boolean(s.handsFree || deps.handsFree()),
-      sttLanguage: s.sttLanguage || 'en-IN',
+      sttLanguage: s.sttLanguage || 'en',
       pin: '',
       pin2: '',
     };
@@ -281,7 +304,7 @@ export function createWizard(deps) {
   function build() {
     const title = h('span', { class: 'wiz-sr' }, 'Set up Echo');
     els.step = h('div', { class: 'wiz-step', 'aria-live': 'polite' });
-    els.orb = h('div', { class: 'wiz-orb', 'aria-hidden': 'true' }, h('i'), h('b'));
+    els.orb = h('div', { class: 'wiz-orb mark', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'));
     els.back = h('button', { type: 'button', class: 'ghost wiz-back', onclick: () => go(-1) }, 'Back');
     els.next = h('button', { type: 'button', class: 'wiz-next', onclick: () => next() }, 'Continue');
     els.dots = h('div', { class: 'wiz-dots', role: 'img' }, STEPS.map(() => h('i')));
@@ -720,9 +743,9 @@ export function createWizard(deps) {
           ...heading('Two ways to talk to me', stepLabel()),
           h('div', { class: 'wiz-ways' },
             h('div', { class: 'wiz-way' },
-              h('div', { class: 'wiz-way-art' }, h('kbd', { class: 'wiz-bigkey' }, 'Space')),
-              h('strong', {}, 'Hold Space, or click the orb'),
-              h('span', {}, "Hold the Space bar while you talk and let go when you're done. Or click the glowing orb to start, and again to stop.")),
+              h('div', { class: 'wiz-way-art' }, h('kbd', { class: 'wiz-bigkey' }, TALK_KEY)),
+              h('strong', {}, IN_MAC_APP ? 'Hold Control and Option' : 'Hold Space, or click Echo’s face'),
+              h('span', {}, IN_MAC_APP ? "Hold the Control and Option keys together while you talk, from any app, and let go when you're done. Tap them twice to switch between listening and resting." : "Hold the Space bar while you talk and let go when you're done. Or click Echo’s face to start, and again to stop.")),
             h('div', { class: 'wiz-way' },
               h('div', { class: 'wiz-way-art wiz-bars', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i'), h('i')),
               h('strong', {}, 'Hands-free: just talk'),
@@ -740,13 +763,16 @@ export function createWizard(deps) {
 
     pin() {
       const err = errorLine();
+      const pinLead = () => lead(state.selfImprove
+        ? 'I can improve my own software, but only after someone types this PIN on this screen. So it stays locked unless you say so.'
+        : 'Resetting Echo or going back to an earlier version will ask for this PIN, so nobody else can do it by accident.');
       if (state.hasPin) {
         return {
           nodes: [
             ...heading('Set a safety PIN', stepLabel()),
-            lead('I can improve my own software, but only after someone types this PIN on this screen. So it stays locked unless you say so.'),
+            pinLead(),
             h('div', { class: 'wiz-done-card' }, h('span', { class: 'wiz-done-ic', html: CHECK }),
-              h('span', {}, h('strong', {}, 'A PIN is already set.'), " You're all good here. You can change it in Settings.")),
+              h('span', {}, h('strong', {}, 'A PIN is already set.'), " You're all good here.")),
           ],
         };
       }
@@ -782,24 +808,115 @@ export function createWizard(deps) {
         },
         nodes: [
           ...heading('Set a safety PIN', stepLabel()),
-          lead('I can improve my own software, but only after someone types this PIN on this screen. So it stays locked unless you say so.'),
+          pinLead(),
           h('div', { class: 'wiz-pins' },
             h('div', {}, h('label', { class: 'wiz-label', for: 'wizPin' }, 'Choose a PIN'), a),
             h('div', {}, h('label', { class: 'wiz-label', for: 'wizPin2' }, 'Type it again'), b)),
           h('p', { class: 'wiz-hint', id: 'wizPinHint' }, "4 to 10 digits. Pick something you'll remember and others won't guess."),
           err,
-          h('div', { class: 'wiz-skip' }, skip, h('span', {}, "If you skip, self-improve stays off. You can set a PIN later in Settings.")),
+          h('div', { class: 'wiz-skip' }, skip, h('span', {}, state.selfImprove ? 'If you skip, self-improve stays off.' : 'A PIN is optional.')),
         ],
       };
     },
 
     permissions() {
       const rows = PERMS.map((p) => permRow(p));
+      if (deps.isMac?.()) rows.push(...MAC_PERMS.map((p) => macPermRow(p)));
       return {
         nodes: [
           ...heading('A few Mac permissions', stepLabel()),
           lead('Test each one now so everything works later. If a Mac pop-up appears, click OK or Allow. You can skip any of these.'),
           h('div', { class: 'wiz-perms' }, rows),
+        ],
+      };
+    },
+
+    tryit() {
+      // A 30-second "try it": hear Echo, let her read the screen (it stays on this Mac), watch her point.
+      const mac = Boolean(deps.isMac?.());
+      const who = (answers.userName || state.settings?.userName || '').trim();
+      const row = (n, title, detail, btnLabel, run) => {
+        const btn = h('button', { type: 'button', class: 'small' }, btnLabel);
+        const sub = h('span', {}, detail);
+        const box = h('div', { class: 'wiz-demo-step' }, h('span', { class: 'wiz-demo-n', 'aria-hidden': 'true' }, String(n)), h('div', { class: 'wiz-demo-text' }, h('strong', {}, title), sub), btn);
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await run(sub);
+            box.classList.add('done');
+            btn.innerHTML = `${CHECK} Again`;
+          } finally {
+            btn.disabled = false;
+          }
+        };
+        return box;
+      };
+      const hear = row(1, 'Hear me', 'Tap to hear my voice.', 'Play', async () => {
+        deps.speak(`Hi${who ? ` ${who}` : ''}! When you ask about your screen, I can take a look and point you to the right spot.`);
+      });
+      const look = row(2, 'Let me look at your screen', mac
+        ? 'I read the text on this Mac and black out passwords and keys. This demo sends nothing anywhere.'
+        : "In the Echo Mac app I can read your screen when you ask. In a browser you'd pick what to share each time.", 'Look', async (sub) => {
+        if (!mac) {
+          sub.textContent = 'Open the Echo Mac app to try this. Here in the browser, I ask you to share your screen each time instead.';
+          return;
+        }
+        sub.textContent = 'Looking…';
+        const result = await new Promise((resolve) => {
+          const done = (e) => { removeEventListener('echo-demo-look', done); clearTimeout(timer); resolve(e.detail); };
+          const timer = setTimeout(() => done({ detail: { ok: false, message: "I didn't hear back from the Mac app." } }), 15000);
+          addEventListener('echo-demo-look', done);
+          cleanups.push(() => removeEventListener('echo-demo-look', done));
+          deps.toApp?.({ type: 'demoLook' });
+        });
+        sub.textContent = result?.ok
+          ? `I read ${result.words} words${result.app ? ` in ${result.app}` : ''}${result.sample ? `, like “${result.sample}”` : ''}.${result.redactions ? ` I blacked out ${result.redactions} secret${result.redactions === 1 ? '' : 's'}.` : ''} That stayed on this Mac.`
+          : result?.error === 'permission'
+            ? 'I need the Screen Recording permission first: allow Echo in System Settings, then try again.'
+            : result?.message || "That didn't work this time.";
+      });
+      const point = row(3, 'Watch me point', mac ? 'My pointer flies over any app. It shows you where to click; it never clicks.' : 'In the Mac app my pointer works over any app; here it stays in this page.', 'Point', async (sub) => {
+        deps.pointAt?.(els.next, 'Click here when you’re ready');
+        deps.speak("That's the button to continue. I only point, you do the clicking.");
+        sub.textContent = 'See the glowing ring? Try asking me later: “where’s the share button?”';
+      });
+      return {
+        next: 'Continue',
+        nodes: [
+          ...heading('Try it: 30 seconds', stepLabel()),
+          lead('Three quick things I can do. Ask about your screen any time: “what’s this error?”, “help me with this page”, or “fix the error on my screen”.'),
+          h('div', { class: 'wiz-demo' }, hear, look, point),
+          mac ? h('p', { class: 'wiz-soft' }, 'Tip: hold Control + Option from any app to talk to me, and let go to send.') : null,
+        ],
+      };
+    },
+
+    magic() {
+      // The three words to know, Echo for Chrome (optional), and a first win to try after setup.
+      const mac = Boolean(deps.isMac?.());
+      const words = MAGIC_WORDS.map(([w, what], i) =>
+        h('div', { class: 'wiz-demo-step done' }, h('span', { class: 'wiz-demo-n', 'aria-hidden': 'true' }, String(i + 1)),
+          h('div', { class: 'wiz-demo-text' }, h('strong', {}, w), h('span', {}, what))));
+      const code = h('code', { class: 'pair-code' }, '…');
+      const copy = h('button', { type: 'button', class: 'ghost small' }, 'Copy code');
+      copy.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(code.textContent || '');
+          copy.innerHTML = `${CHECK} Copied`;
+        } catch {}
+      };
+      fetch('/api/browser').then((r) => r.json()).then((b) => { code.textContent = b.code || '…'; }).catch(() => {});
+      const chrome = h('div', { class: 'wiz-demo-step' }, h('span', { class: 'wiz-demo-n', 'aria-hidden': 'true' }, '★'),
+        h('div', { class: 'wiz-demo-text' }, h('strong', {}, 'Optional: Echo for Chrome'),
+          h('span', {}, 'I read web pages directly (Gmail, forms) and click exactly the right thing. In Chrome: Extensions → Developer mode → Load unpacked → the extension folder in my folder, then paste this code into it.')),
+        h('div', { class: 'wiz-inline' }, code, copy));
+      return {
+        next: 'Continue',
+        nodes: [
+          ...heading('Three magic words', stepLabel()),
+          lead('That’s all you need to remember.'),
+          h('div', { class: 'wiz-demo' }, ...words, mac ? chrome : null),
+          mac ? h('p', { class: 'wiz-soft' }, 'A first win for later: turn on “Let Echo use the computer” in Settings, then say “Echo, open Notes and write hello from Echo”, and watch me do it.') : null,
         ],
       };
     },
@@ -823,8 +940,9 @@ export function createWizard(deps) {
           h('div', { class: 'wiz-examples' }, cards),
           h('div', { class: 'wiz-q' }, 'Good to know'),
           h('ul', { class: 'wiz-tips' },
-            tip('space', 'Hold Space or click the orb', ' to talk. Let go when you’re done.'),
+            tip('space', IN_MAC_APP ? 'Hold Control and Option (⌃⌥)' : 'Hold Space or click Echo’s face', ' to talk. Let go when you’re done.'),
             tip('esc', 'Press Esc', ' to make me stop talking.'),
+            tip('screen', 'Ask about your screen', ': “what’s this error?” I only look when you ask.'),
             tip('workers', 'The Workers tab', ' shows bigger jobs, and anything that needs your OK.')),
           err,
         ],
@@ -931,6 +1049,32 @@ export function createWizard(deps) {
       icon(p.icon, 'wiz-perm-ic', 20),
       h('div', { class: 'wiz-perm-text' }, h('strong', {}, p.title), h('span', {}, p.why), meter, msg),
       h('div', { class: 'wiz-perm-side' }, chip, h('div', { class: 'wiz-perm-btns' }, openBtn, test)));
+  }
+
+  /**
+   * A Mac app permission row (only inside the Mac app): its state, live. Its button opens the
+   * app's own permissions window, which asks macOS and opens the right page of System Settings.
+   */
+  function macPermRow(p) {
+    const chip = h('span', { class: 'wiz-chip', role: 'status' });
+    const btn = h('button', { type: 'button', class: 'small wiz-test' }, 'Allow');
+    btn.setAttribute('aria-label', `Allow ${p.title}`);
+    const sync = (st) => {
+      const ok = Boolean(st?.[p.id]);
+      chip.textContent = !st ? CHIP.idle : ok ? 'Allowed ✓' : 'Not allowed yet';
+      chip.className = `wiz-chip ${!st ? 'idle' : ok ? 'ok' : 'bad'}`;
+      btn.hidden = ok;
+    };
+    const onPerms = (e) => sync(e.detail);
+    addEventListener('echo-permissions', onPerms);
+    cleanups.push(() => removeEventListener('echo-permissions', onPerms));
+    btn.onclick = () => deps.toApp?.({ type: 'showPermissions' });
+    sync(null);
+    deps.toApp?.({ type: 'permissions' });
+    return h('div', { class: 'wiz-perm' },
+      icon(p.icon, 'wiz-perm-ic', 20),
+      h('div', { class: 'wiz-perm-text' }, h('strong', {}, p.title), h('span', {}, p.why)),
+      h('div', { class: 'wiz-perm-side' }, chip, h('div', { class: 'wiz-perm-btns' }, btn)));
   }
 
   async function testMic(st, meter, sync) {

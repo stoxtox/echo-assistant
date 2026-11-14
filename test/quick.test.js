@@ -8,7 +8,7 @@ import { sandbox } from './helpers.js';
 
 const dirs = sandbox('quick');
 const { QuickActions, mask, explainOsaError } = await import('../lib/quick.js');
-const { Dispatcher, fillerFor, FILLERS } = await import('../lib/dispatcher.js');
+const { Dispatcher } = await import('../lib/dispatcher.js');
 const { TaskManager } = await import('../lib/tasks.js');
 
 const PEOPLE = [
@@ -265,8 +265,7 @@ test('the dispatcher has the quick tools and the prompt steers errands to them',
   assert.match(p, /"Sam": Sam \(mobile •••3141\)/);
   assert.ok(!p.includes('010-3141'));
   const names = d.quickTools().map((t) => t.name);
-  assert.deepEqual(names, ['find_contact', 'send_imessage', 'confirm_message', 'set_contact_alias', 'add_calendar_event', 'open_url', 'open_app', 'find_file']);
-  assert.ok(FILLERS.quick.includes(fillerFor('mcp__ops__send_imessage')));
+  assert.deepEqual(names, ['find_contact', 'send_imessage', 'confirm_message', 'message_status', 'set_contact_alias', 'add_calendar_event', 'open_url', 'open_app', 'media_control', 'find_file', 'reveal_file', 'save_from_url', 'read_clipboard']);
   assert.equal(mac.sends().length, 0);
 });
 

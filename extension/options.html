@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Echo for Chrome</title>
+<style>
+  :root { color-scheme: light dark; --sunset: linear-gradient(135deg, #ffb866, #ff7861 45%, #ee5480 75%, #a861d6); }
+  body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; margin: 0; padding: 18px 20px 20px; width: 320px; background: Canvas; color: CanvasText; }
+  h1 { font-size: 15px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  h1 i { width: 12px; height: 12px; border-radius: 50%; background: var(--sunset); box-shadow: 0 0 10px #ff786199; }
+  p { margin: 0 0 12px; color: GrayText; }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  input { width: 100%; box-sizing: border-box; font: inherit; padding: 7px 9px; border-radius: 8px; border: 1px solid #8884; background: transparent; color: inherit; }
+  button { margin-top: 14px; width: 100%; font: inherit; font-weight: 600; padding: 8px; border: 0; border-radius: 999px; color: #fff; background: var(--sunset); cursor: pointer; }
+  #state { margin-top: 10px; font-size: 12px; }
+  #state.on::before { content: '●'; color: #3ec27a; margin-right: 6px; }
+  #state.bad { color: #e0564f; }
+  #note { margin: 6px 0 0; font-size: 12px; }
+</style>
+<h1><i></i>Echo for Chrome</h1>
+<p>Lets Echo read the page you're on and click and type in it precisely. Copy the pairing code from Echo's Settings, under Screen.</p>
+<label for="code">Pairing code</label>
+<input id="code" autocomplete="off" spellcheck="false">
+<label for="port">Echo's port</label>
+<input id="port" inputmode="numeric" value="4777">
+<button id="save" type="button">Connect</button>
+<div id="state" role="status"></div>
+<p id="note" hidden>Echo reads the web page in the front tab, not this page: switch to the tab you want it to see.</p>
+<script src="options.js"></script>
+</html>

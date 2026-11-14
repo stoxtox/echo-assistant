@@ -1,5 +1,6 @@
-// Renders Echo's app icon: the sunset drop from public/voiceviz.js (a glass drop holding a sunset
-// over water, glowing) floating above dusk water that reflects it, on a macOS-style rounded square.
+// Renders Echo's app icon, "Fade": three round-ended bars from a shared left edge on a near-black
+// macOS-style rounded square. They read as an E and as an echo: what you said (white), it fading
+// (grey), and the answer coming back (a bar of colour, glowing).
 // Pure CoreGraphics/ImageIO, so it runs on any Mac with Apple's Command Line Tools; no Homebrew.
 //
 //   xcrun swiftc -O scripts/render-icon.swift -o /tmp/render-icon
@@ -12,9 +13,8 @@
 //
 // Layout follows Apple's macOS icon grid: a 1024 canvas, an 824x824 body centred, with continuous
 // ("squircle") corners (a superellipse, n = 5, matches the ~185px corner radius) and a drop shadow
-// in the margin. Sizes of 32px and below are drawn from a simpler variant: a bigger drop, no fine
-// liquid detail, stronger glow and contrast, so it still reads in the menu bar and Finder lists.
-// The drop's shading is a CPU port of voiceviz.js's fragment shader, frozen at one pleasing frame.
+// in the margin. Sizes of 32px and below are drawn from a bolder variant: thicker bars and a
+// stronger glow, so it still reads in the menu bar and Finder lists.
 
 import CoreGraphics
 import Dispatch
@@ -39,208 +39,62 @@ typealias V3 = SIMD3<Double>
 @inline(__always) func length(_ v: V2) -> Double { (v.x * v.x + v.y * v.y).squareRoot() }
 let white = V3(1, 1, 1)
 
+/// A steady random number for a point (the dither in cgImage).
 func hash(_ p0: V2) -> Double {
   var p = V2(fract(p0.x * 123.34), fract(p0.y * 456.21))
   let d = p.x * (p.x + 45.32) + p.y * (p.y + 45.32)
   p += V2(d, d)
   return fract(p.x * p.y)
 }
-func noise(_ p: V2) -> Double {
-  let i = V2(p.x.rounded(.down), p.y.rounded(.down)), f = p - i
-  let u = f * f * (V2(3, 3) - 2 * f)
-  return mix(mix(hash(i), hash(i + V2(1, 0)), u.x), mix(hash(i + V2(0, 1)), hash(i + V2(1, 1)), u.x), u.y)
-}
-func fbm(_ p0: V2) -> Double {
-  var v = 0.0, a = 0.5, p = p0
-  for _ in 0..<3 {
-    v += a * noise(p)
-    p = V2(1.6 * p.x - 1.2 * p.y, 1.2 * p.x + 1.6 * p.y)
-    a *= 0.5
-  }
-  return v / 0.875
+
+// MARK: - The mark: Fade
+
+/// The answer's colours, left to right: blue, violet, pink, amber.
+let GRADIENT: [V3] = [V3(0.28, 0.5, 1), V3(0.66, 0.4, 1), V3(1, 0.4, 0.62), V3(1, 0.72, 0.4)]
+func gradient(_ t0: Double) -> V3 {
+  let u = clamp(t0, 0, 0.9999) * Double(GRADIENT.count - 1)
+  let n = Int(u)
+  return mix(GRADIENT[n], GRADIENT[n + 1], u - Double(n))
 }
 
-// The voice's warm palette (voiceviz.js WARM): deep rose, coral #FF6A5B, tangerine #FF9F43, gold #FFD166.
-let WARM: [V3] = [V3(0.69, 0.19, 0.36), V3(1, 0.416, 0.357), V3(1, 0.624, 0.263), V3(1, 0.82, 0.4)]
-func ramp(_ s: [V3], _ t0: Double) -> V3 {
-  let x = clamp(t0, 0, 1) * Double(s.count - 1)
-  let i = min(s.count - 2, Int(x))
-  return mix(s[i], s[i + 1], smoothstep(0, 1, x - Double(i)))
-}
-@inline(__always) func palette(_ t: Double) -> V3 { ramp(WARM, t) }
-
-func caustic(_ p: V2, _ t: Double) -> Double {
-  var i = p, c = 1.0
-  for n in 0..<3 {
-    let tt = t * (1 - 3.5 / Double(n + 1))
-    i = p + V2(cos(tt - i.x) + sin(tt + i.y), sin(tt - i.y) + cos(tt + i.x))
-    c += 1 / length(V2(p.x / (sin(i.x + tt) / 0.006), p.y / (cos(i.y + tt) / 0.006)))
-  }
-  c /= 3
-  c = 1.17 - pow(c, 1.4)
-  return clamp(pow(abs(c), 8), 0, 1)
-}
-
-/// Brightness-only tone map, as in the shader: colours stay saturated instead of washing out.
-func toneMap(_ c: V3) -> V3 {
-  let m = max(c.x, c.y, c.z)
-  return m > 1e-4 ? c * ((1 - exp(-m * 1.5)) / m) : c
-}
-/// A soft shoulder for the background: leaves most values alone, rolls highlights off below 1.
-func shoulder(_ c: V3) -> V3 {
-  let m = max(c.x, c.y, c.z), k = 0.72
-  guard m > k else { return c }
-  return c * ((k + (1 - k) * (1 - exp(-(m - k) / (1 - k)))) / m)
-}
-
-// MARK: - The drop (port of voiceviz.js FRAG, one frozen frame)
-
-struct Look {
-  var simple: Bool
-  var flow = 2.6, time = 7.3, level = 0.14
-  var bands = V3(0.22, 0.16, 0.08)
-  var warp = 0.8, ripple = 0.12, bright = 0.9, caustic = 0.55
-}
-
-/// Colour inside the drop. q: position / radius, y up. px: one output pixel in q units.
-func drop(_ q: V2, _ px: Double, _ L: Look) -> V3 {
-  let f = L.flow, T = L.time
-  let qr = min(length(q), 1)
-  let z = max(0, 1 - qr * qr).squareRoot()
-  let lq = q / (0.55 + 0.45 * z)
-  let hz = -0.2 + 0.025 * sin(q.x * 2.3 + f * 0.8) + L.level * 0.035 * sin(q.x * 9 - T * 4)
-  let below = smoothstep(hz + px * 2, hz - px * 2, q.y)
-  let depth = max(hz - q.y, 0)
-  let ringW = sin(depth * 38 / (0.25 + depth) - T * 4 - q.x * 2) * (L.ripple * 0.6 + 0.08)
-  let wob = L.simple ? 0 : (noise(V2(q.x * 3 + f * 0.4, depth * 26 - T * 1.2)) - 0.5) * (0.05 + 0.12 * depth + L.ripple * 0.1)
-  let sp = mix(q, V2(q.x + wob, 2 * hz - q.y + ringW * 0.03), below)
-  let slq = sp / (0.55 + 0.45 * z)
-
-  let w1 = L.simple ? V2(0.5, 0.5) : V2(fbm(slq * 1.1 + V2(0, f * 0.22)), fbm(slq * 1.1 + V2(5.2, -f * 0.18)))
-  let wq = slq + (w1 - V2(0.5, 0.5)) * L.warp * 1.3
-  let liquid = L.simple ? 0.55 : fbm(wq * 1.3 + V2(f * 0.12, f * 0.07))
-  let ring = sin(qr * 13 - T * 5 - liquid * 3) * exp(-qr * 1.3) * L.ripple
-
-  // Sky: gold at the horizon deepening to rose, then night-plum at the top.
-  let hgt = clamp((sp.y - hz) / (1.1 - hz), 0, 1)
-  // (Capped short of pure gold: shaded gold reads khaki on an icon; the sun keeps the gold.)
-  let t = min(0.98 - hgt * 1.05 + (liquid - 0.5) * 0.7, 0.72)
-  let night = V3(0.13, 0.035, 0.09)
-  var col = mix(night, palette(t), clamp(0.28 + 0.72 * (1 - hgt) * (0.55 + 0.6 * liquid), 0, 1) * (0.6 + 0.4 * L.bright))
-
-  // The sun on the waterline.
-  let sun = V2(L.simple ? 0 : 0.12 * sin(f * 0.23), hz + 0.2 + 0.04 * sin(f * 0.4))
-  let sd = length((sp - sun) * V2(1, 1.08))
-  let sr = (L.simple ? 0.24 : 0.17) + L.level * 0.06 + L.bands.x * 0.03
-  let disc = smoothstep(sr, sr - max(0.025, px * 1.5), sd) * smoothstep(hz - 0.01, hz + 0.02, sp.y)
-  let sunCol = mix(palette(1), V3(1, 0.96, 0.86), 0.35)
-  col = mix(col, sunCol, disc * 0.9)
-  col += palette(0.9) * exp(-sd * 4) * (0.35 + 0.5 * L.bright)
-
-  // Waves of light across the sky (too fine for the small variant).
-  if !L.simple {
-    for i in 0..<3 {
-      let fi = Double(i)
-      let b = i == 0 ? L.bands.x : i == 1 ? L.bands.y : L.bands.z
-      let amp = 0.06 + 0.04 * fi + L.level * 0.12 + b * 0.16
-      let y = hz + 0.3 + fi * 0.22 + amp * sin(wq.x * (1.7 + fi * 0.6) + f * (0.9 + fi * 0.35) + fi * 2.1) + (liquid - 0.5) * 0.3 + ring * 0.05
-      let d = sp.y - y
-      let wdt = 0.045 + 0.05 * L.level + 0.03 * b
-      let g = exp(-d * d / (wdt * wdt)) * 0.75 + exp(-abs(d) * 7) * 0.25
-      col += palette(0.35 + fi * 0.28) * g * (0.3 + 0.55 * L.bright) * (0.55 + 0.45 * z)
-    }
-  }
-
-  // The water: darker, streaked, a path of sunlight and a bright waterline.
-  let streak = L.simple ? 0.6 : noise(V2(q.x * 5 + f * 0.3, depth * 60 - T * 2))
-  let sunPath = palette(0.95) * pow(streak, 3) * exp(-abs(q.x - sun.x) * 5) * 0.45 * (0.5 + L.bright)
-  // (Tinted towards rose: darkened gold alone turns olive on an icon's small, bright canvas.)
-  let waterCol = col * (0.3 + 0.45 * streak) * V3(1, 0.72, 0.86)
-  col = mix(col, waterCol + sunPath, below)
-  let lineK: Double = exp(-abs(q.y - hz) / (px * 3 + 0.006)) * (0.25 + 0.5 * L.bright) * smoothstep(0.95, 0.4, qr)
-  col += palette(1) * lineK
-
-  if !L.simple {
-    let c = caustic(lq * 2.6 + w1 * 1.2, f * 0.9 + 23)
-    col += mix(palette(0.95), white, 0.5) * c * L.caustic * z * 0.3 * below
-  }
-
-  // Depth: shade low in the dome, and a darker band just inside the rim.
-  col *= mix(0.6, 1, smoothstep(-1, 0.5, q.y * 0.5 + z * 0.8))
-  col *= 1 - 0.35 * smoothstep(0.72, 0.93, qr) * (1 - smoothstep(0.93, 1, qr))
-
-  // Glass: fresnel rim, a soft window highlight top-left, a thin reflection bottom-right.
-  let fres = pow(1 - z, 3)
-  let fresK: Double = fres * (0.45 + 0.35 * L.bright) * (0.45 + 0.55 * smoothstep(-0.8, 0.8, q.y)) * (L.simple ? 1.3 : 1)
-  col += mix(palette(0.8), white, 0.35) * fresK
-  var hq = q - V2(-0.3, 0.46)
-  hq = V2(0.87 * hq.x + 0.5 * hq.y, -0.5 * hq.x + 0.87 * hq.y)
-  col += exp(-(hq.x * hq.x * 10 + hq.y * hq.y * 40)) * (L.simple ? 0.45 : 0.6) * V3(1, 0.96, 0.92)
-  let cres = smoothstep(0.84, 0.97, qr) * smoothstep(0.2, 0.9, (q.x * 0.6 - q.y * 0.8) / max(qr, 1e-3))
-  col += cres * 0.18 * mix(palette(0.9), white, 0.5)
-
-  return toneMap(col)
-}
-
-// MARK: - The scene on the icon's body (1024 grid, y down)
-
+/// Three bars from a shared left edge (1024 grid, y down): where each ends, its height, and how
+/// white it is (1: what you said; 0.42: it fading; 0: the answer, in colour).
 struct Scene {
-  var look: Look
-  var orbC: V2, orbR: Double, horizon: Double
-  var glow: Double
-  static let full = Scene(look: Look(simple: false), orbC: V2(512, 468), orbR: 246, horizon: 738, glow: 1)
-  static let small = Scene(look: Look(simple: true, bright: 1.05), orbC: V2(512, 478), orbR: 296, horizon: 800, glow: 1.35)
+  var radius: Double, gap: Double, glow: Double
+  static let full = Scene(radius: 52, gap: 159, glow: 1)
+  /// 16 and 32 px: thicker bars, closer together, a stronger glow.
+  static let small = Scene(radius: 66, gap: 168, glow: 1.3)
+  static let left = 317.0
+  var bars: [(end: Double, y: Double, white: Double)] {
+    [(707, 512 - gap, 1), (574, 512, 0.42), (450, 512 + gap, 0)]
+  }
 }
 
-/// Sky, glow and drop at a point above the water. px: one output pixel in grid units.
-func above(_ p: V2, _ s: Scene, _ px: Double, orb: Double = 1) -> V3 {
-  // Dusk sky: night plum at the top warming to rose and a coral-gold haze at the horizon.
-  let t = clamp((p.y - 100) / (s.horizon - 100), 0, 1)
-  let stops: [V3] = [V3(0.05, 0.022, 0.06), V3(0.13, 0.04, 0.115), V3(0.34, 0.085, 0.18), V3(0.78, 0.3, 0.26)]
-  var col = ramp(stops, pow(t, 1.25))
-  let dx = (p.x - s.orbC.x) / 330
-  col += palette(0.55) * exp(-dx * dx) * pow(t, 4) * 0.35
-  if !s.look.simple {
-    // Faint drifting cloud wisps catching the light.
-    let w = fbm(V2(p.x / 230 + 3.1, p.y / 46 + 0.7))
-    col += palette(0.25 + t * 0.6) * smoothstep(0.58, 0.9, w) * 0.16 * smoothstep(0.15, 0.7, t)
-  }
-  // The drop's glow (the shader's exp falloff, in drop radii).
-  let rel = (p - s.orbC) / s.orbR
-  let r = length(rel)
-  let e = max(r - 1, 0)
-  let haloK: Double = exp(-e * 3.2) * 0.5 * s.glow, coreK: Double = exp(-e * 10) * 0.35 * s.glow
-  col += palette(0.55) * haloK
-  col += palette(0.82) * coreK
-  col = shoulder(col)
-  // The drop itself, antialiased at its edge.
-  let aa = px / s.orbR
-  let inside = smoothstep(1 + aa * 0.5, 1 - aa * 0.5, r) * orb
-  if inside > 0 {
-    col = mix(col, drop(V2(rel.x, -rel.y), aa, s.look), inside)
-  }
-  return col
+/// Distance to a bar with round ends (from x0 to x1 at height cy, r thick); < 0 inside.
+@inline(__always) func barDistance(_ p: V2, _ x0: Double, _ x1: Double, _ cy: Double, _ r: Double) -> Double {
+  length(V2(p.x - clamp(p.x, x0, x1), p.y - cy)) - r
 }
 
-/// The whole scene: sky and drop above the horizon, their reflection in dark water below it.
+/// The whole scene: a near-black body, the white bar, the grey bar, and the bar of colour, glowing.
 func scene(_ p: V2, _ s: Scene, _ px: Double) -> V3 {
-  var col: V3
-  if p.y < s.horizon {
-    col = above(p, s, px)
-  } else {
-    let dy = p.y - s.horizon, d = clamp(dy / (924 - s.horizon), 0, 1)
-    let wob = s.look.simple ? 0 : (noise(V2(p.x / 38, dy / (3 + 10 * d))) - 0.5) * (4 + 34 * d)
-    // The drop's reflection, half-transparent so its dark water doesn't sit there like a hill.
-    let refl = above(V2(p.x + wob, s.horizon - dy * 1.15 - 2), s, px, orb: 0.55)
-    let streak = s.look.simple ? 0.55 : noise(V2(p.x / 60, dy / (2.2 + 7 * d)))
-    let reflK: Double = (0.4 + 0.32 * streak) * (1 - 0.5 * d)
-    col = refl * V3(1, 0.74, 0.88) * reflK + V3(0.03, 0.012, 0.03)
-    col += palette(0.95) * pow(streak, 3) * exp(-abs(p.x - s.orbC.x) / 120) * 0.45 * (1 - d)
+  let base = mix(0.065, 0.01, clamp((p.y - 100) / 824, 0, 1))
+  var col = V3(base, base, base)
+  for bar in s.bars {
+    let d = barDistance(p, Scene.left, bar.end, bar.y, s.radius)
+    let v = (p.y - bar.y) / s.radius
+    let g = gradient((p.x - Scene.left) / 177 * 0.9 + 0.05)
+    let out = max(d, 0)
+    let fill: V3
+    if bar.white > 0 {
+      col += white * (0.06 * bar.white * exp(-out / 44))
+      fill = white * (bar.white * (0.96 - 0.07 * v))
+    } else {
+      // The answer is alive: its colour spills into the dark around it.
+      col += g * (0.42 * s.glow * exp(-out / 68))
+      fill = mix(g, white, 0.16 * smoothstep(0.3, -0.9, v))
+    }
+    col = mix(col, fill, smoothstep(px * 0.5, -px * 0.5, d))
   }
-  // The bright waterline, strongest under the drop.
-  let lineW = max(1.6, px * 0.9)
-  let lineK: Double = exp(-abs(p.y - s.horizon) / lineW) * (0.25 + 0.75 * exp(-abs(p.x - s.orbC.x) / 240)) * 0.85
-  col += palette(1) * lineK
   return col
 }
 
@@ -280,8 +134,8 @@ func iconSample(_ p0: V2, _ s: Scene, _ px: Double, bleed: Bool) -> SIMD4<Double
       // The thin glass rim: bright along the top, fading down the sides.
       let rimW = max(1.4, ppx * 0.8)
       let topness = 0.25 + 0.75 * smoothstep(0.4, -1, v.y)
-      col += V3(1, 0.9, 0.84) * exp(-inset / rimW) * 0.42 * topness
-      col += V3(1, 0.85, 0.75) * exp(-inset / 10) * 0.06 * topness
+      col += white * exp(-inset / rimW) * 0.3 * topness
+      col += white * exp(-inset / 10) * 0.04 * topness
     }
   }
   let a = cov + shadowA * (1 - cov)
@@ -419,8 +273,8 @@ if iconset == nil && web == nil && preview == nil {
 }
 
 let master = render(size: 2048, .full)            // 2x supersampled 1024
-let smallMaster = render(size: 1024, .small)      // the simplified drop, for 16 and 32 px
-/// The icon at n px: the detailed render down to 64 px, the simple one (sharpened) below that.
+let smallMaster = render(size: 1024, .small)      // thicker bars, for 16 and 32 px
+/// The icon at n px: the full render down to 64 px, the bolder one (sharpened) below that.
 func icon(_ n: Int) -> CGImage {
   if n <= 32 { return cgImage(sharpen(downsample(smallMaster, to: n), n <= 16 ? 0.45 : 0.3)) }
   return cgImage(downsample(master, to: n))

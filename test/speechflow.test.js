@@ -1,4 +1,4 @@
-// Natural speaking (whole-sentence pieces, a quick acknowledgement), the live task digest, and task
+// Natural speaking (whole-sentence pieces, no canned acknowledgement), the live task digest, and task
 // events that wait for Echo to finish talking.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,7 +6,11 @@ import { EventEmitter } from 'node:events';
 import { sandbox } from './helpers.js';
 
 sandbox('speechflow');
-const { nextSpeechChunk, ackFor, stripLeadingAck, ACKS } = await import('../lib/speech.js');
+const speech = await import('../lib/speech.js');
+const { nextSpeechChunk } = speech;
+const dispatcherModule = await import('../lib/dispatcher.js');
+const { vizStateFor } = await import('../public/ui/mark.js');
+const { captionStatus } = await import('../public/caption.js');
 const { taskDigest, EventLog } = await import('../lib/digest.js');
 const { Dispatcher } = await import('../lib/dispatcher.js');
 const { TaskManager } = await import('../lib/tasks.js');
@@ -29,11 +33,12 @@ function pieces(text, step = 3) {
   return out;
 }
 
-test('the voice gets whole sentences, and a short reply goes as one piece', () => {
+test('the voice gets whole sentences, and the first one goes as soon as it is written', () => {
   // The old clause-sized pieces ("The job search finished,") made each one sound like a finished
-  // thought, read out word by word. Now a piece is always one or more whole sentences.
-  assert.deepEqual(pieces("Hey there! What's up?"), ["Hey there! What's up?"], 'a short reply is one request');
-  assert.deepEqual(pieces("Yep, all done. Nothing's running right now."), ["Yep, all done. Nothing's running right now."]);
+  // thought, read out word by word. A piece is one or more whole sentences; the first goes on its
+  // own at once, so the voice starts while the rest is written. A tiny opener waits for the next.
+  assert.deepEqual(pieces("Hey there! What's up?"), ["Hey there! What's up?"], 'a tiny opener goes with the next sentence');
+  assert.deepEqual(pieces("Yep, all done. Nothing's running right now."), ['Yep, all done.', "Nothing's running right now."], 'the first sentence goes at once');
 
   const reply = 'The job search finished, and I found twelve roles that match what you asked for in Hoboken. Three look strong, and two of them are remote. Want me to send you the list?';
   const p = pieces(reply);
@@ -46,10 +51,10 @@ test('the voice gets whole sentences, and a short reply goes as one piece', () =
   for (const piece of later) assert.match(piece, /[.!?]$/, piece);
 });
 
-test('only a very long sentence is cut, at a comma, and never on a dangling word', () => {
+test('only a long sentence is cut, at a comma, and never on a dangling word', () => {
   const long = 'Okay, so the website build finished about ten minutes ago, and every page loads fine on my end, including the new pricing page and the updated signup form.';
   const p = pieces(long);
-  assert.equal(p[0], 'Okay, so the website build finished about ten minutes ago, and every page loads fine on my end,');
+  assert.equal(p[0], 'Okay, so the website build finished about ten minutes ago,', 'a long first sentence starts at its first good comma');
   assert.equal(p.join(' '), long);
 
   const runOn = Array.from({ length: 50 }, (_, i) => (i === 44 ? 'the' : `word${i}`)).join(' ') + ' ';
@@ -63,24 +68,15 @@ test('numbers and abbreviations are not sentence ends, and a lone short opener w
   assert.equal(nextSpeechChunk('Okay, so', { first: true }), null);
   assert.equal(nextSpeechChunk('Done. Next', { first: true }), null, 'a short first sentence waits for the second');
   assert.deepEqual(nextSpeechChunk('Done. The tests pass. More', { first: true }), { chunk: 'Done. The tests pass.', rest: 'More' });
-  assert.deepEqual(nextSpeechChunk('Version 1.5 costs 1,200 dollars, e.g. for teams. Dr. Smith agreed. Then', { first: true }), { chunk: 'Version 1.5 costs 1,200 dollars, e.g. for teams. Dr. Smith agreed.', rest: 'Then' });
-  assert.deepEqual(nextSpeechChunk('Here are three:\nFirst one\nSecond', { first: true }), { chunk: 'Here are three:\nFirst one', rest: 'Second' }, 'line breaks end a piece');
+  assert.deepEqual(nextSpeechChunk('Version 1.5 costs 1,200 dollars, e.g. for teams. Dr. Smith agreed. Then', { first: true }), { chunk: 'Version 1.5 costs 1,200 dollars, e.g. for teams.', rest: 'Dr. Smith agreed. Then' });
+  assert.deepEqual(nextSpeechChunk('Here are three:\nFirst one\nSecond', { first: true }), { chunk: 'Here are three:', rest: 'First one\nSecond' }, 'line breaks end a piece');
+  assert.equal(nextSpeechChunk('The tests pass', { first: true }), null, 'half a sentence waits');
+  assert.deepEqual(nextSpeechChunk('The tests pass. And', { first: true }), { chunk: 'The tests pass.', rest: 'And' }, 'a whole first sentence goes at once');
 });
 
-test('an acknowledgement fits what was said, varies, and stays quiet for small talk', () => {
-  assert.ok(ACKS.check.includes(ackFor("how's the job search going")));
-  assert.ok(ACKS.do.includes(ackFor('make me a monthly budget spreadsheet')));
-  assert.ok(ACKS.think.includes(ackFor('what should I cook for dinner tonight')));
-  for (const small of ['thanks', 'hi Echo', 'yes', 'no thanks', 'okay cool', 'thank you so much']) assert.equal(ackFor(small), null, small);
-  let last = '';
-  for (let i = 0; i < 30; i++) {
-    const a = ackFor('check on the website build please');
-    assert.notEqual(a, last);
-    last = a;
-  }
-  assert.equal(stripLeadingAck('Sure, the build is green.'), 'the build is green.');
-  assert.equal(stripLeadingAck('Okay. It finished.'), 'It finished.');
-  assert.equal(stripLeadingAck('Surely not.'), 'Surely not.');
+test('there are no canned acknowledgements or fillers left to speak', () => {
+  for (const name of ['ACKS', 'ackFor', 'stripLeadingAck']) assert.equal(speech[name], undefined, name);
+  for (const name of ['FILLERS', 'fillerFor']) assert.equal(dispatcherModule[name], undefined, name);
 });
 
 test('the digest has status, the last activity line, pending approvals with risk, and recent events', () => {
@@ -99,7 +95,8 @@ test('the digest has status, the last activity line, pending approvals with risk
   const d = taskDigest(tasks, { now, events: events.list() });
   assert.match(d, /#3 running · Research · "Find entry-level supply chain jobs" · 2 min ago: Searching LinkedIn for Hoboken roles/);
   assert.match(d, /#2 needs OK \(risky\) · Budget2 · "Fix the totals row" · wants to: git push to origin/);
-  assert.match(d, /#1 done 40 min ago · Research · "Movie times tonight": Three showings after 8/);
+  assert.doesNotMatch(d, /Movie times tonight/, 'finished over 15 minutes ago: only counted');
+  assert.match(d, /\+1 older finished today \(list_tasks or get_task has them\)/);
   assert.doesNotMatch(d, /Ancient job/, 'day-old finished tasks drop out');
   assert.match(d, /Recent: 5 min ago #2 asked for OK \(risky\) · 40 min ago #1 finished/);
   assert.ok(d.split('\n').length <= 6, 'compact');
@@ -121,22 +118,55 @@ test('every message carries the fresh task digest', () => {
   const { d, tasks, sent } = rig();
   tasks.tasks.set(7, { id: 7, kind: 'code', project: 'Cardz', title: 'Add dark mode', status: 'running', updatedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(), log: [{ kind: 'tool', text: 'Edit styles.css' }] });
   d.send("where are we");
-  assert.match(sent[0], /where are we\n\n\[task digest\]\nTasks \(fresh as of this message/);
+  assert.match(sent[0], /where are we\n\[model\] [^\n]+\n\n\[task digest\]\nTasks \(fresh as of this message/);
   assert.match(sent[0], /#7 queued|#7 running|#7 running \(worker not running\)/);
   assert.match(d.systemPrompt(), /\[task digest\]/);
 });
 
-test('after an acknowledgement, the tool filler stays quiet and the reply drops its "Sure"', () => {
+const STOCK = /^(sure|okay|ok|got it|on it|hmm|alright|right|one sec|let me (look|check|see)|checking|hang on|yep|ooh)( now| on it| one sec)?[.!,…]*$/i; // a line that says nothing
+
+test('the moment the user stops talking, only the visual cue fires: nothing is spoken', () => {
   const { d, spoken } = rig();
-  assert.ok(d.acknowledge('check how the website build is going'));
-  d.send('check how the website build is going');
+  let cues = 0;
+  d.on('thinking', () => cues++);
+  for (const said of ["how's the job search going", 'make me a monthly budget spreadsheet', 'what should I cook for dinner tonight', 'check on the website build please']) {
+    d.heard();
+    d.send(said);
+  }
+  assert.equal(cues, 4);
+  assert.deepEqual(spoken, [], 'no acknowledgement is spoken');
+  // The sunset and the caption bar show thinking straight away.
+  assert.equal(vizStateFor({ heard: true }), 'thinking');
+  assert.equal(vizStateFor({ heard: true, speaking: true }), 'speaking');
+  assert.equal(vizStateFor({ heard: true, listening: true }), 'listening');
+  assert.equal(vizStateFor({}), 'idle');
+  assert.equal(captionStatus({ busy: true }), 'Thinking…');
+});
+
+test('a tool call says no filler; progress speech comes only from the model stream, once', () => {
+  const { d, spoken } = rig();
+  const say = (text) => {
+    d.onStreamEvent({ type: 'content_block_start', content_block: { type: 'text' } });
+    for (const w of text.match(/.{1,4}/g)) d.onStreamEvent({ type: 'content_block_delta', delta: { type: 'text_delta', text: w } });
+    d.onStreamEvent({ type: 'content_block_stop' });
+  };
+  d.send('check how the Fortuna staging site is doing');
+  // Straight to a tool: silence (the visual cue covers it), never a stock phrase.
   d.onStreamEvent({ type: 'content_block_start', content_block: { type: 'tool_use', name: 'mcp__ops__get_task' } });
-  d.onStreamEvent({ type: 'content_block_start', content_block: { type: 'text' } });
-  for (const w of 'Sure, the build finished, and every page loads fine now. '.match(/.{1,4}/g)) d.onStreamEvent({ type: 'content_block_delta', delta: { type: 'text_delta', text: w } });
-  d.onStreamEvent({ type: 'content_block_stop' });
-  assert.equal(spoken.length, 2, spoken.join(' | '));
-  assert.ok(Object.values(ACKS).flat().includes(spoken[0]));
-  assert.equal(spoken[1], 'the build finished, and every page loads fine now.', 'the whole sentence in one piece');
+  assert.deepEqual(spoken, []);
+  // The model's own first sentence goes to the voice before the next tool runs.
+  say("Checking Fortuna's staging.");
+  assert.deepEqual(spoken, ["Checking Fortuna's staging."]);
+  d.onStreamEvent({ type: 'content_block_start', content_block: { type: 'tool_use', name: 'WebFetch' } });
+  // Said again after the tools: not repeated.
+  say("Checking Fortuna's staging. Staging is up, and the login page loads fine now.");
+  assert.deepEqual(spoken, ["Checking Fortuna's staging.", 'Staging is up, and the login page loads fine now.']);
+  for (const s of spoken) assert.doesNotMatch(s, STOCK);
+  // The next turn (after this one's reply ends) may say the same line again.
+  d.onMessage({ type: 'result', subtype: 'success', session_id: 's', total_cost_usd: 0 });
+  d.send('and again please, check the staging');
+  say("Checking Fortuna's staging.");
+  assert.equal(spoken.at(-1), "Checking Fortuna's staging.");
 });
 
 test('each piece carries the one before it, so the voice keeps the intonation going', () => {

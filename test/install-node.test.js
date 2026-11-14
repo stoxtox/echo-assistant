@@ -24,8 +24,9 @@ function fakeDist(dir, { lts = 'v22.99.0', current = 'v23.1.0', corrupt = false 
     const name = `node-${v}-darwin-arm64`;
     const stage = path.join(dir, 'stage', v);
     fs.mkdirSync(path.join(stage, name, 'bin'), { recursive: true });
-    const major = v.slice(1).split('.')[0];
-    fs.writeFileSync(path.join(stage, name, 'bin', 'node'), `#!/bin/sh\ncase "$1" in -v) echo ${v} ;; -p) echo ${major} ;; esac\n`, { mode: 0o755 });
+    // -p answers the scripts' version check: major * 1000 + minor (22.18 → 22018).
+    const [major, minor] = v.slice(1).split('.').map(Number);
+    fs.writeFileSync(path.join(stage, name, 'bin', 'node'), `#!/bin/sh\ncase "$1" in -v) echo ${v} ;; -p) echo ${major * 1000 + minor} ;; esac\n`, { mode: 0o755 });
     fs.mkdirSync(path.join(dist, v), { recursive: true });
     const tgz = path.join(dist, v, `${name}.tar.gz`);
     execFileSync('tar', ['-czf', tgz, '-C', stage, name]);

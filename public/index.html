@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Echo</title>
-  <meta name="theme-color" content="#0E0D10" media="(prefers-color-scheme: dark)" />
-  <meta name="theme-color" content="#FAF7F2" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0A0A0B" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png" />
@@ -14,99 +14,56 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <!-- Shared SVG defs: the sunset gradients used by the icons. -->
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <defs>
-      <linearGradient id="sunset" x1="0" y1="1" x2="1" y2="0">
-        <stop offset="0" stop-color="#FF6A5B" />
-        <stop offset="1" stop-color="#FF9F43" />
-      </linearGradient>
-      <linearGradient id="sunsetSend" x1="2" y1="21" x2="22" y2="3" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#FF6A5B" />
-        <stop offset=".62" stop-color="#FF9F43" />
-        <stop offset="1" stop-color="#FFB45E" />
-      </linearGradient>
-    </defs>
-  </svg>
-
+  <!-- The top bar: the mark and Echo's name, then one segmented control (Talk / Workers /
+       Settings). The things that aren't a place (hands-free, new chat, what happened, a report) sit in the "more" menu. -->
   <header class="topbar">
     <div class="brand">
-      <span class="brand-name">Echo</span>
+      <span class="mark brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="assistant-name" id="assistantName">Echo</span>
       <span class="conn" id="connDot" role="status" hidden>Reconnecting…</span>
-    </div>
-    <div class="stats">
-      <span class="stat" id="meta">Connecting…</span>
-      <span class="stat cost" id="cost" title="API-equivalent estimate. With your claude.ai login this counts toward your plan&#39;s usage limits, not a bill."></span>
     </div>
     <button id="selfBadge" class="self-badge" hidden title="Self-improve mode is unlocked. Click to lock.">
       <span class="pulse-dot"></span>Self-improve <span id="selfTimer"></span><span class="sep">·</span>Lock
     </button>
     <div class="controls" role="toolbar" aria-label="Echo controls">
-      <div class="pop piano" id="piano">
-        <div class="tb-pair">
-          <button id="pianoToggle" class="tb" type="button" aria-pressed="false" aria-label="Ambient piano" data-tip="Ambient piano">
-            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 18V5.5l11-2V16"/><circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="17" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
-            <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+      <nav class="segnav" aria-label="View">
+        <div class="seg-tabs" role="tablist" aria-label="View">
+          <button role="tab" class="tab on" data-view="chat" aria-selected="true">Talk</button>
+          <button role="tab" class="tab" data-view="tasks" aria-selected="false">Workers <span class="tab-count" id="tabCount"></span></button>
+          <button role="tab" class="tab" data-view="sky" aria-selected="false" title="Your days with Echo, as constellations">Sky</button>
+        </div>
+        <button id="openSettings" class="seg-btn" type="button" aria-label="Settings" aria-haspopup="dialog" title="Settings (⌘,)">Settings</button>
+      </nav>
+      <details class="more" id="moreMenu">
+        <summary class="more-btn" aria-label="More" title="More">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><g fill="currentColor"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></g></svg>
+        </summary>
+        <div class="more-menu">
+          <div class="more-item listen-pick">
+            <span class="more-text">Listening<small id="listenHint">Just talk</small></span>
+            <span class="listen-seg" id="listenSeg" role="radiogroup" aria-label="How Echo listens">
+              <button type="button" role="radio" data-mode="listening" aria-checked="false">On</button>
+              <button type="button" role="radio" data-mode="resting" aria-checked="false">Rest</button>
+              <button type="button" role="radio" data-mode="off" aria-checked="false">Off</button>
+            </span>
+            <input type="checkbox" id="handsFree" hidden />
+          </div>
+          <button id="newConvo" class="more-item" type="button" aria-label="New chat">
+            <span class="more-text">New chat<small>Start a fresh conversation</small></span>
           </button>
-          <button id="pianoMoodBtn" class="tb tb-caret" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Piano mood" data-tip="Piano mood">
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
+          <button id="whatHappened" class="more-item" type="button">
+            <span class="more-text">What happened<small>How long each answer took</small></span>
+          </button>
+          <button id="reportBtn" class="more-item" type="button">
+            <span class="more-text">Save a report<small>For whoever helps you with Echo</small></span>
           </button>
         </div>
-        <div class="menu" id="pianoMenu" role="menu" aria-label="Piano mood" hidden></div>
-      </div>
-      <div class="pop" id="voicePop">
-        <button id="voiceBtn" class="tb tb-drop" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Voice" data-tip="Voice">
-          <svg class="ic-on" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19V5Z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.5 6.2a8.2 8.2 0 0 1 0 11.6"/></g></svg>
-          <svg class="ic-off" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19V5Z"/><path d="m16 9.5 5 5M21 9.5l-5 5"/></g></svg>
-          <span class="tb-text" id="voiceLabel">Voice</span>
-          <svg class="chev" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <div class="menu voice-menu" id="voiceMenu" role="menu" aria-label="Voice" hidden>
-          <label class="menu-switch"><span>Read replies aloud</span><span class="switch"><input type="checkbox" id="speakOut" role="menuitemcheckbox" checked /><span class="track"></span></span></label>
-          <div class="menu-sep" role="separator"></div>
-          <div class="menu-title">Voice</div>
-          <div class="menu-list" id="voiceList"></div>
-          <div class="menu-sep" role="separator"></div>
-          <button type="button" class="menu-item menu-link" id="voiceMore" role="menuitem"><span></span><span>Speed, engine and more…</span></button>
-        </div>
-      </div>
-      <button id="wakePill" class="tb wake-pill" type="button" aria-pressed="true" aria-label="Wake word listener: click to turn the mic off" data-tip="Listening for &quot;Hey Echo&quot;" hidden><span class="wake-dot" aria-hidden="true"></span><span class="tb-text">Hey Echo</span></button>
-      <label class="switch tb-switch" data-tip="Talk without holding Space"><input type="checkbox" id="handsFree" role="switch" /><span class="track"></span><span class="switch-label">Hands-free</span></label>
-      <span class="tb-sep" aria-hidden="true"></span>
-      <button id="newConvo" class="tb" type="button" aria-label="New chat" data-tip="New chat">
-        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.5"/><path d="M17.6 3.4a2 2 0 0 1 2.9 2.9L12.8 14l-3.6.9.9-3.6 7.5-7.9Z"/></g></svg>
-      </button>
-      <button id="openSettings" class="tb" type="button" aria-label="Settings" data-tip="Settings">
-        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="10" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
-      </button>
-      <div class="pop more" id="morePop">
-        <button id="moreBtn" class="tb" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More" data-tip="More">
-          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><g fill="currentColor"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></g></svg>
-        </button>
-        <div class="menu" id="moreMenu" role="menu" aria-label="More" hidden></div>
-      </div>
+      </details>
     </div>
   </header>
 
-  <nav class="tabs" role="tablist" aria-label="View">
-    <button role="tab" class="tab on" data-view="chat" aria-selected="true">Chat</button>
-    <button role="tab" class="tab" data-view="tasks" aria-selected="false">Workers <span class="tab-count" id="tabCount"></span></button>
-  </nav>
-
   <main data-view="chat">
     <section class="convo" aria-label="Conversation">
-      <div class="hero" id="hero">
-        <div class="hero-glass" aria-hidden="true"><i class="g1"></i><i class="g2"></i><i class="g3"></i><i class="tint"></i><i class="grain"></i></div>
-        <div class="stage">
-          <canvas id="viz" aria-hidden="true"></canvas>
-          <button id="mic" class="orb" aria-label="Talk"></button>
-        </div>
-        <div class="hero-text">
-          <div class="assistant-name" id="assistantName">Echo</div>
-          <div class="state" id="state">Hold <kbd>Space</kbd> or click to talk · <kbd>Esc</kbd> to hush</div>
-          <div class="interim" id="interim"></div>
-        </div>
-      </div>
       <div class="update-card" id="updateCard" hidden role="status">
         <div class="update-text">
           <strong id="updateTitle">Update available</strong>
@@ -118,34 +75,63 @@
           <button type="button" class="small" id="updateNow">Update now</button>
         </div>
       </div>
-      <div class="transcript" id="transcript" aria-live="polite">
-        <div class="chat-empty" id="chatEmpty">
-          <p class="chat-empty-title">What should we get done?</p>
-          <p class="muted">Talk, or tap an idea to start.</p>
+      <div class="transcript" id="transcript" aria-live="polite"></div>
+      <!-- The hero is one element with three shapes (style.css): Home (the companion large, the greeting,
+           the hint and three ideas), Talking (the companion and your words, large) and, once there is a
+           conversation, a single strip above the composer (the companion small, what Echo is doing, Stop).
+           The companion (public/ui/companion.js) draws into the canvas; the button over it takes the clicks. -->
+      <div class="hero" id="hero">
+        <div class="stage">
+          <div class="pearl" id="viz" aria-hidden="true"><canvas></canvas></div>
+          <button id="mic" class="orb" aria-label="Talk"></button>
+        </div>
+        <span class="lvl" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <div class="hero-text">
+          <div class="chat-empty" id="chatEmpty">
+            <h1 class="hello" id="greeting">Good evening.</h1>
+          </div>
+          <div class="state" id="state"></div>
+          <div class="conv-window" id="convWindow" role="status" aria-live="polite" hidden>
+            <svg class="cw-ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="cw-track" cx="10" cy="10" r="8" /><circle class="cw-left" id="cwLeft" cx="10" cy="10" r="8" /></svg>
+            <span class="cw-label" id="cwLabel"></span>
+          </div>
+          <div class="live" id="live">
+            <div class="live-cap" id="interim"><div class="live-words"></div></div>
+            <div class="live-note" id="liveNote" role="status" aria-live="polite"></div>
+          </div>
           <div class="suggestions" id="suggestions">
             <button type="button" class="suggestion">How are my workers doing?</button>
             <button type="button" class="suggestion">Make me a monthly budget spreadsheet.</button>
             <button type="button" class="suggestion">Build a simple website for my bakery.</button>
           </div>
         </div>
+        <span class="act-text" id="actText" role="status"></span>
+        <span class="act-prog" id="actProg" aria-hidden="true" hidden><b></b></span>
+        <button type="button" class="ghost small act-stop" id="actStop" hidden>Stop</button>
       </div>
       <form id="typeForm" class="composer">
         <div class="attachments" id="attachTray" aria-label="Attached images" hidden></div>
+        <div class="quick-replies" id="quickReplies" aria-label="Quick answers" hidden></div>
         <div class="composer-row">
           <button type="button" class="attach" id="attachBtn" aria-label="Attach images" data-tip="Attach images">
-            <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M20 11.4 12.1 19.3a5.2 5.2 0 0 1-7.4-7.4l8-8a3.5 3.5 0 0 1 4.9 4.9l-8 8a1.7 1.7 0 0 1-2.5-2.5l7.4-7.3" fill="none" stroke="url(#sunsetSend)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M20 11.4 12.1 19.3a5.2 5.2 0 0 1-7.4-7.4l8-8a3.5 3.5 0 0 1 4.9 4.9l-8 8a1.7 1.7 0 0 1-2.5-2.5l7.4-7.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
           <textarea id="typeInput" rows="1" placeholder="Message Echo…" autocomplete="off" aria-label="Message"></textarea>
           <button type="submit" class="send" id="sendBtn" aria-label="Send" title="Send (Enter)" disabled>
-            <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true">
-              <path d="M4.2 3.9 20.4 11.1a1 1 0 0 1 0 1.8L4.2 20.1a.8.8 0 0 1-1.1-.95L5.2 12 3.1 4.85a.8.8 0 0 1 1.1-.95Z" fill="url(#sunsetSend)" fill-opacity=".16" stroke="url(#sunsetSend)" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M5.3 12h6.2" stroke="url(#sunsetSend)" stroke-width="1.7" stroke-linecap="round"/>
-            </svg>
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 19V5.5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
         <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
       </form>
       <div class="drop-veil" id="dropVeil" hidden><div class="drop-card">Drop images to attach</div></div>
+    </section>
+
+    <section class="sky" id="sky" aria-label="Sky: your days with Echo as constellations" tabindex="0">
+      <canvas aria-hidden="true"></canvas>
+      <div class="sky-tip" hidden></div>
+      <p class="sky-empty" hidden>Your sky starts tonight. Every time you talk to Echo, a star appears.</p>
+      <p class="sky-hint">Each star is something you said. Higher, Echo had more to say; bigger, Echo did something. Click a name to hear that day. Drag to walk back.</p>
+      <button type="button" class="sky-today small ghost" id="skyToday">Today</button>
     </section>
 
     <section class="tasks" aria-label="Workers">
@@ -157,12 +143,12 @@
         <div class="approval-group-text"><strong id="approvalGroupTitle"></strong><span class="muted" id="approvalGroupSub"></span></div>
         <div class="approval-group-actions">
           <button type="button" class="small ghost" id="groupDeny">Deny all</button>
-          <button type="button" class="small gold" id="groupAllow">Approve all</button>
+          <button type="button" class="small" id="groupAllow">Approve all</button>
         </div>
       </div>
       <div id="taskList" class="task-list">
         <div class="empty" id="emptyTasks">
-          <svg viewBox="0 0 64 64" width="44" height="44" fill="none" stroke="url(#sunset)" stroke-width="4" stroke-linecap="round" aria-hidden="true"><path d="M27 32H43A8 8 0 1 0 41.13 37.14"/><path d="M46.89 21.29A16 16 0 1 0 46.89 42.71" opacity=".6"/></svg>
+          <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
           <p class="empty-title">No workers yet</p>
           <p class="muted">Ask for something bigger, like a spreadsheet or a website, and a worker picks it up here. Anything that needs your OK shows up here too.</p>
         </div>
@@ -170,75 +156,220 @@
     </section>
   </main>
 
-  <aside id="settings" class="drawer" hidden aria-label="Settings">
-    <div class="drawer-head">
-      <h2>Settings</h2>
-      <button id="closeSettings" class="ghost small" aria-label="Close">Close</button>
-    </div>
-    <label class="field">Assistant's name<input id="setName" maxlength="24" /></label>
-    <label class="field">Your name<input id="setUser" maxlength="40" placeholder="So it can greet you" /></label>
-    <div class="field">Personality<div id="personalities" class="chips"></div></div>
-    <label class="field">Voice engine<select id="setProvider"></select></label>
-    <label class="field">Voice<select id="setVoice"></select></label>
-    <label class="field">Speed <span id="speedVal" class="muted"></span><input id="setSpeed" type="range" min="0.8" max="1.3" step="0.05" /></label>
-    <label class="switch"><input type="checkbox" id="setSounds" /><span class="track"></span>Sound effects</label>
+  <!-- Settings: a full view under the top bar, five sections listed on the left (public/settings.js runs the shell:
+       sections, focus trap, Esc; app.js wires each control). Every row is a label, one short line of help and its control. -->
+  <div id="settings" class="settings-veil" hidden>
+    <div class="settings" id="settingsCard" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <aside class="set-side">
+        <h2 id="settingsTitle" class="set-title">Settings</h2>
+        <nav class="set-nav" id="settingsNav" role="tablist" aria-orientation="vertical" aria-label="Settings sections">
+          <button type="button" role="tab" class="set-tab" id="tab-listening" data-section="listening" aria-controls="sec-listening"><span>Listening</span>
+          </button>
+          <button type="button" role="tab" class="set-tab" id="tab-voice" data-section="voice" aria-controls="sec-voice"><span>Voice</span>
+          </button>
+          <button type="button" role="tab" class="set-tab" id="tab-companion" data-section="companion" aria-controls="sec-companion"><span>Companion</span>
+          </button>
+          <button type="button" role="tab" class="set-tab" id="tab-mac" data-section="mac" aria-controls="sec-mac"><span>On your Mac</span>
+          </button>
+          <button type="button" role="tab" class="set-tab" id="tab-you" data-section="you" aria-controls="sec-you"><span>You &amp; privacy</span>
+          </button>
+        </nav>
+        <p class="set-side-foot" id="settingsVersion"></p>
+      </aside>
 
-    <h3 class="drawer-sub" id="helpSafety">Help &amp; safety</h3>
-    <label class="switch"><input type="checkbox" id="setBeginner" /><span class="track"></span>Beginner-friendly mode (plain language, suggestions)</label>
-    <label class="switch"><input type="checkbox" id="setSafe" /><span class="track"></span>Extra safety (always ask before deleting files, installing software, controlling apps or sending)</label>
-    <div class="field">Projects folder
-      <div class="folder-row">
-        <code class="folder-path" id="projectsDirShow">~/Echo Projects</code>
-        <button id="changeFolder" class="ghost small" type="button">Change…</button>
+      <div class="set-main">
+        <header class="set-head">
+          <h3 id="settingsHeading">Listening</h3>
+          <button id="closeSettings" class="icon-btn set-close" type="button" aria-label="Close settings" data-tip="Close (Esc)">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </header>
+        <div class="set-body" id="settingsBody" tabindex="-1">
+
+          <!-- ============ Listening ============ -->
+          <section class="set-section" id="sec-listening" data-section="listening" data-title="Listening" role="tabpanel" aria-labelledby="tab-listening">
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Hands-free</span><span class="set-desc">Just talk; when off, hold Space or ⌃⌥ to speak.</span></span>
+              <span class="switch"><input type="checkbox" id="setHandsFree" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">“Hey Echo”</span><span class="set-desc">Wake Echo by name when hands-free is off.</span></span>
+              <span class="switch"><input type="checkbox" id="setWake" role="switch" /><span class="track"></span></span>
+            </label>
+            <div class="set-row">
+              <span class="set-text"><span class="set-label" id="setPauseLabel">How long to wait when you pause</span><span class="set-desc">Shorter answers faster; longer lets you think mid-sentence.</span></span>
+              <div id="setPause" class="chips" role="radiogroup" aria-labelledby="setPauseLabel">
+                <button type="button" class="chip" role="radio" data-ms="900">Short</button>
+                <button type="button" class="chip" role="radio" data-ms="1300">Normal</button>
+                <button type="button" class="chip" role="radio" data-ms="1900">Long</button>
+              </div>
+            </div>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Talk over Echo to interrupt</span><span class="set-desc">It lowers its voice, then stops when you keep going.</span></span>
+              <span class="switch"><input type="checkbox" id="setBargeIn" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Double-check what I heard</span><span class="set-desc">A second recognizer on this Mac corrects mishearings.</span></span>
+              <span class="switch"><input type="checkbox" id="setSecondListen" role="switch" /><span class="track"></span></span>
+            </label>
+          </section>
+
+          <!-- ============ Voice ============ -->
+          <section class="set-section" id="sec-voice" data-section="voice" data-title="Voice" role="tabpanel" aria-labelledby="tab-voice">
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Read replies aloud</span><span class="set-desc">Off keeps replies silent, as text only.</span></span>
+              <span class="switch"><input type="checkbox" id="speakOut" role="switch" checked /><span class="track"></span></span>
+            </label>
+            <div class="set-row">
+              <span class="set-text"><label class="set-label" for="setVoice">Voice</label><span class="set-desc">Pick a voice, then play a sample.</span></span>
+              <div class="set-inline">
+                <select id="setVoice" class="set-select"></select>
+                <button id="previewVoice" class="icon-btn set-play" type="button" aria-label="Play a voice sample" data-tip="Play a sample">
+                  <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a.8.8 0 0 0 1.2.7l10.2-6.4a.8.8 0 0 0 0-1.4L9.2 4.9a.8.8 0 0 0-1.2.7Z"/></svg>
+                </button>
+              </div>
+            </div>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Speed <span id="speedVal" class="set-val"></span></span><span class="set-desc">How fast Echo talks.</span></span>
+              <input id="setSpeed" type="range" min="0.8" max="1.3" step="0.05" />
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Sounds</span><span class="set-desc">Soft chimes when Echo starts listening, finishes or needs you.</span></span>
+              <span class="switch"><input type="checkbox" id="setSounds" role="switch" /><span class="track"></span></span>
+            </label>
+          </section>
+
+          <!-- ============ Companion ============ -->
+          <section class="set-section" id="sec-companion" data-section="companion" data-title="Companion" role="tabpanel" aria-labelledby="tab-companion">
+            <div class="set-row stack">
+              <span class="set-text"><span class="set-label" id="setLookLabel">Look</span><span class="set-desc">Auto wears Moon on dark backgrounds and Glass on light ones.</span></span>
+              <div class="look-picker" id="setLook" role="radiogroup" aria-labelledby="setLookLabel">
+                <label class="look-choice"><input type="radio" name="companionLook" value="auto" /><span class="pearl" aria-hidden="true"><canvas></canvas></span><span class="look-name">Auto</span></label>
+                <label class="look-choice"><input type="radio" name="companionLook" value="glass" /><span class="pearl" aria-hidden="true"><canvas></canvas></span><span class="look-name">Glass</span></label>
+                <label class="look-choice"><input type="radio" name="companionLook" value="moon" /><span class="pearl" aria-hidden="true"><canvas></canvas></span><span class="look-name">Moon</span></label>
+              </div>
+            </div>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Lively</span><span class="set-desc">It hops and sparkles when things go well.</span></span>
+              <span class="switch"><input type="checkbox" id="setLively" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row" data-mac-only>
+              <span class="set-text"><span class="set-label">Point at things</span><span class="set-desc">It shows you where to click, and never clicks itself.</span></span>
+              <span class="switch"><input type="checkbox" id="setPointer" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row" data-mac-only>
+              <span class="set-text"><span class="set-label">Caption beside the light</span><span class="set-desc">A few words about each step, like “Clicking Send”.</span></span>
+              <span class="switch"><input type="checkbox" id="setStepCaptions" role="switch" /><span class="track"></span></span>
+            </label>
+          </section>
+
+          <!-- ============ On your Mac ============ -->
+          <section class="set-section" id="sec-mac" data-section="mac" data-title="On your Mac" role="tabpanel" aria-labelledby="tab-mac">
+            <label class="set-row" data-mac-only>
+              <span class="set-text"><span class="set-label">Let Echo use the computer</span><span class="set-desc">Echo clicks, types and opens apps when you ask.</span></span>
+              <span class="switch"><input type="checkbox" id="setComputer" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Extra safety</span><span class="set-desc">Ask before deleting, installing, controlling apps or sending anything.</span></span>
+              <span class="switch"><input type="checkbox" id="setSafe" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row" data-mac-only>
+              <span class="set-text"><span class="set-label">Leave my mouse alone</span><span class="set-desc">Echo works through the app itself, so your pointer stays yours.</span></span>
+              <span class="switch"><input type="checkbox" id="setBackground" role="switch" /><span class="track"></span></span>
+            </label>
+            <div class="set-row" id="chromeRow">
+              <span class="set-text"><span class="set-label">Echo for Chrome <span class="pair-dot" id="chromeDot" aria-hidden="true"></span></span><span class="set-desc" id="chromeStatus">Paste this code into the Echo extension in Chrome.</span></span>
+              <div class="set-inline wrap"><code id="chromeCode" class="pair-code">…</code><button id="chromeCopy" class="ghost small" type="button">Copy code</button></div>
+            </div>
+            <!-- The next three belong to the Mac app (macos/Sources/Config.swift Prefs): shown once the app has said what they are. -->
+            <label class="set-row" id="hotKeyRow" hidden>
+              <span class="set-text"><span class="set-label">Summon shortcut</span><span class="set-desc">Brings Echo to the front from any app.</span></span>
+              <select id="setHotKey" class="set-select"></select>
+            </label>
+            <label class="set-row" id="openAtLoginRow" hidden>
+              <span class="set-text"><span class="set-label">Open at login</span><span class="set-desc">Echo starts when you sign in to your Mac.</span></span>
+              <span class="switch"><input type="checkbox" id="setOpenAtLogin" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row" id="keepWorkingRow" hidden>
+              <span class="set-text"><span class="set-label">Keep working after I quit</span><span class="set-desc">Tasks carry on in the background after you quit Echo.</span></span>
+              <span class="switch"><input type="checkbox" id="setKeepWorking" role="switch" /><span class="track"></span></span>
+            </label>
+          </section>
+
+          <!-- ============ You & privacy ============ -->
+          <section class="set-section" id="sec-you" data-section="you" data-title="You &amp; privacy" role="tabpanel" aria-labelledby="tab-you">
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Your name</span><span class="set-desc">So Echo can greet you.</span></span>
+              <input id="setUser" class="set-input" maxlength="40" />
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Echo's name</span><span class="set-desc">What Echo answers to.</span></span>
+              <input id="setName" class="set-input" maxlength="24" />
+            </label>
+            <div class="set-row">
+              <span class="set-text"><span class="set-label" id="personalityLabel">Personality</span><span class="set-desc">How Echo talks; Beginner keeps to plain words.</span></span>
+              <div id="personalities" class="chips" role="group" aria-labelledby="personalityLabel"></div>
+            </div>
+            <div class="set-row">
+              <span class="set-text"><span class="set-label"><span class="status-dot" id="claudeDot" aria-hidden="true"></span><span id="claudeTitle">Claude sign-in</span></span><span class="set-desc" id="claudeDetail">Echo runs on your Claude account.</span></span>
+              <button id="claudeSignIn" class="ghost small" type="button">Sign in…</button>
+            </div>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Daily limit <span id="usageToday" class="set-val"></span></span><span class="set-desc">No new task starts past this cost; 0 means no limit.</span></span>
+              <span class="set-money"><span aria-hidden="true">$</span><input id="setDailyBudget" class="set-input num" type="number" min="0" max="5000" step="5" inputmode="decimal" /></span>
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Keep recordings</span><span class="set-desc">What you say stays on this Mac for 30 days.</span></span>
+              <span class="switch"><input type="checkbox" id="setKeepRecordings" role="switch" /><span class="track"></span></span>
+            </label>
+            <label class="set-row">
+              <span class="set-text"><span class="set-label">Keep a conversation log</span><span class="set-desc">What was said and answered, on this Mac for 30 days.</span></span>
+              <span class="switch"><input type="checkbox" id="setKeepTranscript" role="switch" /><span class="track"></span></span>
+            </label>
+            <!-- Permissions belong to the Mac app (its own checklist window): shown inside the app only. -->
+            <div class="set-row" id="permsRow" hidden>
+              <span class="set-text"><span class="set-label">Permissions <span id="permsState" class="set-val"></span></span><span class="set-desc">What macOS lets Echo see, hear and control.</span></span>
+              <button id="permsOpen" class="ghost small" type="button">Review…</button>
+            </div>
+            <div class="set-row">
+              <span class="set-text"><span class="set-label"><span id="updVersion">Updates</span> <span class="muted" id="updState"></span></span><span class="set-desc" id="updHint">Echo checks for updates once a day.</span></span>
+              <div class="set-inline">
+                <button id="updRollback" class="ghost small" type="button" hidden>Go back</button>
+                <button id="updCheck" class="ghost small" type="button">Check for updates</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <span class="set-text"><span class="set-label">Reset Echo</span><span class="set-desc">Erase what Echo knows about you; your files stay.</span></span>
+              <button id="resetEcho" class="ghost small danger-text" type="button">Reset Echo…</button>
+            </div>
+            <!-- What Echo was told or has learned, each with Remove: listed only when there is something (public/ui/rules.js, skills.js). -->
+            <div class="set-group" id="rulesGroup" hidden>
+              <h5 class="set-group-title">Rules Echo follows</h5>
+              <div id="rulesList"></div>
+            </div>
+            <div class="set-group" id="skillsGroup" hidden>
+              <h5 class="set-group-title">Skills Echo has learned</h5>
+              <div id="skillsList"></div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
-    <div class="drawer-actions">
-      <button id="runSetup" class="ghost" type="button">Run setup again</button>
-      <button id="resetEcho" class="ghost danger-text" type="button">Reset Echo…</button>
-    </div>
+  </div>
 
-    <h3 class="drawer-sub">Speech recognition</h3>
-    <label class="field">Engine<select id="setStt"></select></label>
-    <p class="hint" id="sttHint"></p>
-    <label class="field" id="sttLangField">Language
-      <select id="setSttLang">
-        <option value="en-IN">English (India)</option>
-        <option value="en-US">English (US)</option>
-        <option value="en">English (any accent)</option>
-      </select>
-    </label>
-    <p class="hint">Recognition is locked to English so it never switches to another language.</p>
-    <label class="field">End-of-sentence pause <span id="pauseVal" class="muted"></span><input id="setPause" type="range" min="800" max="3000" step="100" /></label>
-    <label class="switch"><input type="checkbox" id="setSmart" /><span class="track"></span>Smart correction (fixes misheard names using context)</label>
-    <label class="switch"><input type="checkbox" id="setPreview" /><span class="track"></span>Show words live while I talk</label>
-    <label class="switch"><input type="checkbox" id="setWake" /><span class="track"></span>Wake word: say "Hey Echo" to talk (listens on this Mac only; Space always works). Hands-free also only answers when I say "Echo"</label>
-    <label class="field">Wake word sensitivity <span id="wakeSensVal" class="muted"></span><input id="setWakeSens" type="range" min="0" max="1" step="0.25" /></label>
-    <label class="field">Words to expect (one per line: names, places, brands, dishes)
-      <textarea id="vocabWords" rows="7" spellcheck="false"></textarea>
-    </label>
-    <button id="vocabSave" class="ghost small" type="button">Save words</button>
-    <div class="field">Learned corrections <span class="muted">(heard → meant)</span><div id="vocabFixes" class="fixes"></div></div>
-    <p class="hint">Your project folder names are included automatically. Tell Echo "no, I meant …" and she learns the fix.</p>
-    <div class="drawer-actions">
-      <button id="previewVoice" class="ghost">Preview voice</button>
+  <!-- What happened (public/ui/timelineview.js): opened from the "more" menu, or the "…" beside a reply, in the dialog below. -->
+  <div id="happenedView" hidden>
+    <p class="set-note">Each time Echo answered: how long before you heard it, and where the time went. Only timings are kept, never what was said or what was on your screen.</p>
+    <div class="tl-bar set-note">
+      <div class="chips" id="tlRange" role="group" aria-label="How far back">
+        <button type="button" class="chip on" data-since="10m" aria-pressed="true">Last 10 minutes</button>
+        <button type="button" class="chip" data-since="1h" aria-pressed="false">Last hour</button>
+        <button type="button" class="chip" data-since="today" aria-pressed="false">Today</button>
+      </div>
+      <button type="button" class="chip" id="tlSlow" aria-pressed="false">Only slow ones</button>
     </div>
-    <h3 class="drawer-sub" id="updatesSection">Updates</h3>
-    <div class="field"><span id="updVersion">Echo</span> <span class="muted" id="updState"></span></div>
-    <p class="hint" id="updHint"></p>
-    <label class="switch" id="autoUpdateRow"><input type="checkbox" id="setAutoUpdate" /><span class="track"></span>Install updates automatically (only when Echo isn't busy)</label>
-    <div class="drawer-actions">
-      <button id="updCheck" class="ghost small" type="button">Check for updates</button>
-      <button id="updRollback" class="ghost small" type="button" hidden>Go back</button>
-    </div>
-    <h3 class="drawer-sub">Self-improve</h3>
-    <div class="field">PIN
-      <p class="hint" id="pinHint">Optional. When set, unlocking self-improve mode and merging its changes also need this PIN.</p>
-      <input id="pinCurrent" type="password" inputmode="numeric" placeholder="Current PIN" autocomplete="off" hidden />
-      <input id="pinNew" type="password" inputmode="numeric" placeholder="New PIN (4–10 digits)" autocomplete="off" />
-      <button id="pinSave" class="ghost small" type="button">Save PIN</button>
-    </div>
-    <p class="hint" id="elevenHint">Want an even more human voice? Add <code>ELEVENLABS_API_KEY=…</code> to the <code>.env</code> file in the app folder and restart. ElevenLabs will then show up here.</p>
-  </aside>
+    <div class="tl-list" id="tlList" aria-live="polite"></div>
+  </div>
 
   <div id="modal" class="modal" hidden>
     <div class="modal-card" id="modalCard" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -249,36 +380,35 @@
   </div>
 
   <div id="toast" class="toast" role="status" hidden></div>
+  <!-- Echo for Chrome is knocking without the right pairing code (lib/browser.js): one clear prompt. -->
+  <div id="chromePair" class="pair-prompt" role="alert" hidden>
+    <div class="pair-prompt-text"><strong>Echo for Chrome needs pairing.</strong> <span id="chromePairWhy"></span> Click the Echo icon in Chrome's toolbar, paste this code and click Connect. It stays paired after that, even when Echo restarts.</div>
+    <div class="set-inline wrap"><code id="chromePairCode" class="pair-code">…</code><button id="chromePairCopy" class="ghost small" type="button">Copy code</button><button id="chromePairClose" class="ghost small" type="button">Not now</button></div>
+  </div>
   <div id="restartOverlay" class="restart-overlay" hidden role="status"><div class="spinner"></div><div id="restartText">Applying update and restarting…</div><div class="restart-sub" id="restartSub"></div></div>
 
+  <!-- A worker's card: its title and a tag, one line of status, then only what needs you. -->
   <template id="taskTpl">
     <article class="task">
       <div class="task-top">
-        <span class="status"><span class="status-dot"></span><span class="status-text"></span></span>
-        <span class="task-kind"></span>
-        <span class="spacer"></span>
-        <button class="icon-btn small act-term" title="Watch this worker live in Terminal" aria-label="Open in Terminal">
-          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m5 8 4 4-4 4M12 17h7"/></svg>
-        </button>
-        <button class="ghost small act-stop">Stop</button>
+        <h3 class="task-title"></h3>
+        <span class="status"><span class="status-text"></span></span>
       </div>
-      <h3 class="task-title"></h3>
-      <div class="task-meta"></div>
       <div class="task-live"><span class="live-icon" aria-hidden="true"></span><span class="live-text"></span><span class="live-ago"></span></div>
+      <p class="task-summary"></p>
+      <div class="task-sub"><span class="task-kind"></span><div class="task-meta"></div></div>
       <div class="approval" hidden>
         <div class="approval-head">
-          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 2 3 6v6c0 5 3.8 9.4 9 10 5.2-.6 9-5 9-10V6l-9-4Zm-1 6h2v6h-2V8Zm0 8h2v2h-2v-2Z"/></svg>
           <span class="approval-title"></span>
         </div>
         <code class="approval-text"></code>
         <div class="approval-actions">
-          <button class="small gold act-allow">Approve</button>
+          <button class="small act-allow">Approve</button>
           <button class="small ghost act-allow-similar" title="Approve this and stop asking about similar read-only web requests for this task">Always for this task</button>
           <span class="spacer"></span>
           <button class="small ghost danger-text act-deny">Deny</button>
         </div>
       </div>
-      <p class="task-summary"></p>
       <div class="task-files"></div>
       <div class="review" hidden>
         <div class="review-head"><strong>Ready for your review</strong> <span class="review-checks"></span></div>
@@ -292,6 +422,11 @@
       <div class="task-foot">
         <details class="task-activity"><summary class="activity-summary">Log</summary><pre class="task-log"></pre></details>
         <details class="task-asked"><summary>What was asked</summary><p class="task-instruction"></p></details>
+        <span class="spacer"></span>
+        <button class="icon-btn small act-term" title="Watch this worker live in Terminal" aria-label="Open in Terminal">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m5 8 4 4-4 4M12 17h7"/></svg>
+        </button>
+        <button class="ghost small act-stop">Stop</button>
       </div>
     </article>
   </template>

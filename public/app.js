@@ -1,62 +1,125 @@
-import { createVoiceViz } from '/voiceviz.js';
-import { AmbientPiano, PIANO_MOODS } from '/piano.js';
-import { createKaraoke, speechBounds, alignTimings, pieceGap, playPlan } from '/karaoke.js';
-import { createWizard, suggestionsFor, friendlyPath, STEPS } from '/onboarding.js';
+import { vizStateFor } from '/ui/mark.js';
+import { createCompanion, sorryLine, firstToday, dayKey } from '/ui/companion.js';
+import { createKaraoke, speechBounds, alignTimings, pieceGap, playPlan, estimateTimings } from '/karaoke.js';
+import { createWizard, suggestionsFor, signInSummary, STEPS } from '/onboarding.js';
 import { WakeListener } from '/wake.js';
-
-const $ = (id) => document.getElementById(id);
+import { StreamClient, downsample, wavBytes } from '/sttstream.js';
+import { createScreenClient, pointAtElement, nativeApp, toApp } from '/screen.js';
+import { createComputerClient } from '/computer.js';
+import { AutoListen, awaitsAnswer, autoListenMs } from '/autolisten.js';
+import { createCaptionFeed, captionTimes } from '/caption.js';
+import { createLiveCaption, trulyEmpty, showPttHint } from '/livecaption.js';
+import { createTalkView } from '/ui/talkview.js';
+import { createSky } from '/ui/sky.js';
+import { yesOrNo } from '/yesno.js';
+import { AppMic, stateLine, dropLine, sendWithRetry, BARGE_CONFIRM_MS, NO_TEXT_LINE, NOT_SENT_LINE } from '/nativemic.js';
+import { HandsFreeWatch, watchPauseMs } from '/handsfreewatch.js';
+import { createSettingsPanel } from '/settings.js';
+import { windowState, windowLabel, windowEndsAt } from '/convwindow.js';
+import { $, el, button, actionButton, step, toast, escapeHtml, escapeRe, postJson } from '/ui/dom.js';
+import { pref } from '/ui/prefs.js';
+import { ws, send, openSocket, timeline } from '/ui/socket.js';
+import { openModal, closeModal } from '/ui/modal.js';
+import { addMsg, scrollDown, showUndo, settleUndo, showMessageConfirm, settleMessageConfirm, addTaskCard, settleTaskCard, syncTaskCards, setChatNote, showExplain } from '/ui/chat.js';
+import { tasks, setCosts, updateMeta, upsertTask, appendLog } from '/ui/tasks.js';
+import { selfStatus, setSelfStatus, showUnlock, setAssistantName } from '/ui/selfimprove.js';
+import { setUpdateStatus, checkForUpdates, setRestartScreen } from '/ui/updates.js';
+import { imageGrid, putInComposer, setOnTyped } from '/ui/composer.js';
+import { renderRules } from '/ui/rules.js';
+import { renderSkills } from '/ui/skills.js';
+import '/ui/report.js';
+import { createTimelineView, tagTurn } from '/ui/timelineview.js';
+import '/ui/topbar.js';
+import { activity } from '/ui/activity.js';
+import { greeting } from '/ui/home.js';
 const els = {
-  dot: $('connDot'), meta: $('meta'), mic: $('mic'), state: $('state'), interim: $('interim'), viz: $('viz'),
+  dot: $('connDot'), mic: $('mic'), state: $('state'), viz: $('viz'),
   assistantName: $('assistantName'), transcript: $('transcript'), typeForm: $('typeForm'), typeInput: $('typeInput'),
   handsFree: $('handsFree'), speakOut: $('speakOut'), newConvo: $('newConvo'),
   taskList: $('taskList'), emptyTasks: $('emptyTasks'), taskCount: $('taskCount'), tpl: $('taskTpl'),
   settings: $('settings'), openSettings: $('openSettings'), closeSettings: $('closeSettings'),
-  setName: $('setName'), setUser: $('setUser'), personalities: $('personalities'), setProvider: $('setProvider'),
+  setName: $('setName'), setUser: $('setUser'), personalities: $('personalities'),
   setVoice: $('setVoice'), setSpeed: $('setSpeed'), speedVal: $('speedVal'), setSounds: $('setSounds'),
-  previewVoice: $('previewVoice'), elevenHint: $('elevenHint'),
+  previewVoice: $('previewVoice'),
   selfBadge: $('selfBadge'), selfTimer: $('selfTimer'), modal: $('modal'), modalTitle: $('modalTitle'),
   modalBody: $('modalBody'), modalActions: $('modalActions'), restartOverlay: $('restartOverlay'),
-  cost: $('cost'), pinCurrent: $('pinCurrent'),
-  setStt: $('setStt'), sttHint: $('sttHint'), setSttLang: $('setSttLang'), sttLangField: $('sttLangField'),
-  setPause: $('setPause'), pauseVal: $('pauseVal'), setSmart: $('setSmart'), setPreview: $('setPreview'), setWake: $('setWake'), setWakeSens: $('setWakeSens'), wakeSensVal: $('wakeSensVal'), wakePill: $('wakePill'),
-  vocabWords: $('vocabWords'), vocabSave: $('vocabSave'), vocabFixes: $('vocabFixes'), pinNew: $('pinNew'), pinSave: $('pinSave'), pinHint: $('pinHint'),
+  setPause: $('setPause'), setWake: $('setWake'),
   chatEmpty: $('chatEmpty'), tabCount: $('tabCount'), toast: $('toast'), main: document.querySelector('main'),
-  piano: $('piano'), pianoToggle: $('pianoToggle'), pianoMoodBtn: $('pianoMoodBtn'), pianoMenu: $('pianoMenu'),
-  voiceBtn: $('voiceBtn'), voiceLabel: $('voiceLabel'), voiceMenu: $('voiceMenu'), voiceList: $('voiceList'), voiceMore: $('voiceMore'),
-  moreBtn: $('moreBtn'), moreMenu: $('moreMenu'),
+  setHandsFree: $('setHandsFree'),
   attachBtn: $('attachBtn'), fileInput: $('fileInput'), attachTray: $('attachTray'), dropVeil: $('dropVeil'),
   approvalGroup: $('approvalGroup'), approvalGroupTitle: $('approvalGroupTitle'), approvalGroupSub: $('approvalGroupSub'),
-  groupAllow: $('groupAllow'), groupDeny: $('groupDeny'), hero: $('hero'), sendBtn: $('sendBtn'),
-  suggestions: $('suggestions'), setBeginner: $('setBeginner'), setSafe: $('setSafe'), projectsDirShow: $('projectsDirShow'),
-  changeFolder: $('changeFolder'), runSetup: $('runSetup'), resetEcho: $('resetEcho'), restartText: $('restartText'), restartSub: $('restartSub'),
+  groupAllow: $('groupAllow'), groupDeny: $('groupDeny'), sendBtn: $('sendBtn'),
+  suggestions: $('suggestions'), setSafe: $('setSafe'),
+  resetEcho: $('resetEcho'), restartText: $('restartText'), restartSub: $('restartSub'),
 };
 
-const pref = {
-  get: (k, d) => { try { const v = localStorage.getItem('voiceops.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set: (k, v) => { try { localStorage.setItem('voiceops.' + k, JSON.stringify(v)); } catch {} },
-};
 
-let settings = { assistantName: 'Ops', ttsProvider: 'kokoro', voice: 'af_heart', speed: 1.05, sounds: true, personality: 'buddy' };
+let settings = { assistantName: 'Ops', ttsProvider: 'kokoro', voice: 'af_heart', speed: 1.05, sounds: true, personality: 'friendly' };
+// The floating caption bar in the Mac app (public/caption.js, macos/Sources/Caption.swift).
+const caption = createCaptionFeed({ post: toApp, enabled: () => settings.captionBar !== false });
+/** @type {{ providers: any[], personalities: any[], budget?: Record<string, any> }} */
 let voiceCatalog = { providers: [], personalities: [] };
+// Your words as you say them, under the voice (public/livecaption.js), and its short notes.
+const liveCap = createLiveCaption($('live'));
+// Over a conversation your words are the next bubble in the thread (public/ui/talkview.js).
+createTalkView({ transcript: $('transcript'), live: $('live'), mic: $('mic'), input: /** @type {HTMLTextAreaElement} */ ($('typeInput')), chatEmpty: $('chatEmpty'), handsFree: /** @type {HTMLInputElement} */ ($('handsFree')), scrollDown });
+// "release Space to send": shown while you hold the key the first few times, then never again.
+const pttHint = {
+  show: () => showPttHint(pref.get('pttHintUses', 0)),
+  used: () => { const n = pref.get('pttHintUses', 0); if (showPttHint(n)) pref.set('pttHintUses', n + 1); },
+};
 
 /* ---------- Connection ---------- */
-let ws;
 let projects = [];
-const tasks = new Map();
+/** The last lesson step the orb reacted to (`lesson id:step`), so it reacts once. */
+let lessonMoment = '';
+/** The questions waiting for your OK (confirmation cards, by id): the companion tilts and nudges while there are any. */
+const asks = new Set();
+/** A card was answered: it stops asking, and a yes makes it happy. @param {string} id @param {unknown} yes */
+function answered(id, yes) {
+  // You said yes to what it asked: pleased, without the hop (this can happen many times in a minute).
+  if (asks.delete(id) && yes === true) viz.moment('content');
+  renderOrb();
+}
 
 function connect() {
-  ws = new WebSocket(`ws://${location.host}`);
-  // Connected is the normal state, so it shows nothing; only a lost connection gets a pill.
-  ws.onopen = () => { els.dot.hidden = true; if (voiceBusySent) reportVoiceBusy(true); };
-  ws.onclose = () => { els.dot.hidden = false; setTimeout(connect, 1500); };
-  ws.onmessage = (e) => handle(JSON.parse(e.data));
+  openSocket({
+    // Connected is the normal state, so it shows nothing; only a lost connection gets a pill.
+    onOpen: () => {
+      els.dot.hidden = true;
+      if (voiceBusySent) reportVoiceBusy(true);
+      // The Mac app's page can look at the screen and point by itself (public/screen.js).
+      if (nativeApp()) send({ type: 'hello', native: true });
+    },
+    onClose: () => { els.dot.hidden = false; },
+    onMessage: handle,
+  });
 }
-const send = (msg) => ws?.readyState === 1 && ws.send(JSON.stringify(msg));
 
 let liveBubble = null;
+// Brief voice: the details that come after the answer (steps, a list, numbers) are shown under
+// its bubble in a block of their own, closed until clicked. Never inside the bubble.
+const detailBlocks = new WeakMap();
+function addDetails(bubble, text) {
+  let body = detailBlocks.get(bubble);
+  if (!body) {
+    const box = document.createElement('details');
+    box.className = 'msg-details';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Details';
+    body = document.createElement('div');
+    body.className = 'msg-details-body';
+    box.append(summary, body);
+    bubble.after(box);
+    detailBlocks.set(bubble, body);
+  }
+  body.append(text);
+}
 function handle(msg) {
   switch (msg.type) {
     case 'snapshot':
+      screenClient.clearLooks(); // the line is back: a screen_done may have been missed while it was down
+      quietMode = msg.quietMode === true;
       projects = msg.projects;
       tasks.clear();
       els.taskList.querySelectorAll('.task').forEach((n) => n.remove());
@@ -65,415 +128,294 @@ function handle(msg) {
       setBusy(msg.busy);
       updateMeta();
       setSelfStatus(msg.self);
-      costs = msg.costs;
-      renderCosts();
+      setCosts(msg.costs);
       if (!resetting) els.restartOverlay.hidden = true;
       for (const r of msg.messageConfirms || []) showMessageConfirm(r);
+      for (const r of msg.computerConfirms || []) computerClient.confirm(r);
+      computerClient.state({ driving: Boolean(msg.driving) });
+      activity.driving({ driving: Boolean(msg.driving) });
+      syncRunListen(Boolean(msg.driving));
+      caption.update({ driving: Boolean(msg.driving), waitingForConfirm: (msg.computerConfirms || []).length > 0, question: computerClient.question() });
       syncTaskCards(msg.tasks);
+      asks.clear();
+      for (const r of [...(msg.messageConfirms || []), ...(msg.computerConfirms || [])]) asks.add(r.id);
+      for (const t of msg.tasks) if (t.pendingApproval) asks.add(t.pendingApproval.id);
+      renderOrb();
       if (msg.update) setUpdateStatus(msg.update);
       break;
     case 'update': setUpdateStatus(msg.status, msg.notice); break;
     case 'self_status': setSelfStatus(msg.status); break;
-    case 'costs': costs = msg.costs; renderCosts(); break;
+    case 'costs': setCosts(msg.costs); break;
     case 'self_unlock_request': showUnlock(msg.request); sfx('attention'); break;
     case 'restarting': showRestarting('Applying update and restarting…'); break;
     case 'resetting': beginResetWait(lastPid); break;
     case 'projects': projects = msg.projects || []; updateMeta(); break;
+    case 'stt_partial': onStreamPartial(msg); break;
+    case 'stt_ready': onStreamReady(msg); break;
+    case 'heard_fix': {
+      // A second listen heard it better (lib/secondlisten.js): your last words are put right in place.
+      const mine = [...document.querySelectorAll('.msg.you:not(.live-bubble)')].at(-1);
+      if (mine) mine.innerHTML = `${escapeHtml(msg.text)}<span class="heard">first heard as: “${escapeHtml(msg.was || '')}”</span>`;
+      caption.update({ user: msg.text });
+      lastSaid = String(msg.text || '');
+      viz.moment('wink'); // it put your words right
+      break;
+    }
     case 'heard': {
+      screenClient.clearLooks(); // a new turn: no "Looking" chip is left over from the one before
+      heardAt = Date.now();
+      typedLast = Boolean(msg.typed);
+      showQuickReplies([]);
+      // A new turn of yours: whatever is still being read out from the one before stops now.
+      // (Oct 8, 2026: one turn in nine waited 10 to 30 seconds behind the old answer's voice.)
+      if (playing || speechQueue.length || sources.size) { timeline('play.cut', { queued: speechQueue.length }, msg.trace); hush(); }
       const bubble = addMsg('you', '');
       // Underline words the recognizer wasn't sure about; show what was originally heard.
       let html = escapeHtml(msg.text);
       for (const w of msg.unsure || []) html = html.replace(new RegExp(`\\b(${escapeRe(escapeHtml(w))})\\b`, 'i'), '<span class="unsure" title="Not sure I heard this right">$1</span>');
       bubble.innerHTML = html + (msg.raw ? `<span class="heard">heard: “${escapeHtml(msg.raw)}”</span>` : '');
+      caption.update({ user: msg.text });
+      // Kept for "Send anyway", should Echo decide these words weren't for it (the quiet chip).
+      lastSaid = msg.typed ? '' : String(msg.text || '');
+      appMic.releaseBarge(); // your words are in: she may talk again
       if (msg.images?.length) bubble.prepend(imageGrid(msg.images));
       scrollDown();
       break;
     }
-    case 'say_start': liveBubble = addMsg('ai streaming', ''); karaoke.hold(liveBubble); break;
+    case 'say_start': gapFiller.stop(); liveBubble = addMsg('ai streaming', ''); karaoke.hold(liveBubble); break;
     case 'say_delta':
       if (!liveBubble) { liveBubble = addMsg('ai streaming', ''); karaoke.hold(liveBubble); }
-      karaoke.append(liveBubble, msg.text);
+      // msg.details: what the reply put after its "---" line goes under the bubble, never in it.
+      if (msg.details) addDetails(liveBubble, msg.text);
+      else karaoke.append(liveBubble, msg.text);
       scrollDown();
       break;
     case 'say_end': liveBubble?.classList.remove('streaming'); karaoke.release(liveBubble); liveBubble = null; break;
     // Sentences of the reply being streamed arrive after their text, so they highlight in its bubble.
-    case 'speak': speak(msg.text, liveBubble, { prev: msg.prev }); break;
-    case 'say': speakAll(msg.text, addMsg('ai', msg.text)); break;
-    case 'activity': addMsg('activity', '→ ' + msg.text); break;
-    case 'busy': setBusy(msg.busy); break;
-    case 'error': addMsg('error', msg.text); sfx('error'); break;
+    // (Echo's own yes or no, as it starts to say it: its light, if it is out, nods or shakes with it. See nodWith.)
+    case 'speak': gapFiller.stop(); tagTurn(liveBubble, msg.trace); nodWith(msg); speak(msg.text, liveBubble, { prev: msg.prev, trace: msg.trace, line: msg.id, last: true }); break;
+    // msg.speak: the spoken part when Brief voice is on. msg.details: the rest, under the bubble.
+    case 'say': {
+      gapFiller.stop();
+      const bubble = addMsg('ai', msg.text);
+      if (msg.details) addDetails(bubble, msg.details);
+      tagTurn(bubble, msg.trace);
+      speakAll(msg.speak ?? msg.text, bubble, msg.trace, msg.id);
+      break;
+    }
+    case 'activity': gapFiller.activity(msg.text); activity.say(msg.text); break;
+    case 'show_sky': showSky(msg.play === true); break;
+    // A line Echo was asked to keep on screen: the Mac app shows it as a small note (TalkLayer.swift).
+    case 'pin_note': toApp({ type: 'pinNote', text: String(msg.text || '') }); break;
+    // Echo is keeping an eye on a window (lib/watch.js): the Mac app parks a small light on it until the watch ends.
+    case 'watch_light': toApp({ type: 'watchLight', id: String(msg.id || ''), app: String(msg.app || ''), on: msg.on === true, done: msg.done === true }); break;
+    case 'reply_end':
+      skyView.refresh(); // today's constellation may have a new star
+      gapFiller.stop();
+      replyEnded(Boolean(msg.awaitsReply), Array.isArray(msg.chips) ? msg.chips.slice(0, 3).map(String) : []);
+      // It has just asked you something: a tilt of the head while it waits for your answer.
+      if (msg.awaitsReply) viz.moment('curious');
+      break;
+    // (It heard you: a small nod.)
+    case 'thinking': screenClient.clearLooks(); heardCue(true); gapFiller.start(); viz.moment('nod'); break;
+    case 'hush': hush(); heardCue(false); gapFiller.stop(); break;
+    // Quiet mode (you said you can't talk now): nothing is spoken until you speak again; the window says so once.
+    case 'quiet_mode': quietMode = msg.on === true; if (quietMode) hush(); if (msg.text) addMsg('ai', msg.text); break;
+    case 'busy': if (!msg.busy) gapFiller.stop(); setBusy(msg.busy); break;
+    case 'error': addMsg('error', msg.text); sfx('error'); viz.moment('sorry'); break;
+    // A sentence was heard but not passed on. The reasons worth telling you about get one short
+    // line and the companion's small "sorry"; too faint and heard twice pass without a sign. When
+    // Echo chose to stay quiet you spoke and nothing happened at all (six times on Oct 3): now a
+    // small chip under your words lets you send them anyway.
+    case 'dropped': {
+      const line = sorryLine(msg.reason);
+      if (line) { liveCap.note(line); viz.moment('sorry'); }
+      else if (msg.reason === 'quiet' && lastSaid) { notSureForMe(lastSaid); lastSaid = ''; }
+      break;
+    }
+    // You picked up Echo's light and dropped it on something: shown as what you "said".
+    case 'pointed': {
+      const what = String(msg.label || msg.role || 'that').slice(0, 80);
+      addMsg('you', `Pointed at ${what}${msg.app ? ` in ${String(msg.app).slice(0, 40)}` : ''}`);
+      scrollDown();
+      break;
+    }
     case 'task': {
       const prev = tasks.get(msg.task.id);
       upsertTask(msg.task);
       updateMeta();
       if (prev && prev.status !== msg.task.status) {
-        if (msg.task.status === 'done') sfx('done');
+        // A worker finished: the companion is pleased, and looks over at the Workers tab for a moment.
+        if (msg.task.status === 'done') { sfx('done'); viz.moment('happy'); viz.lookToward(document.querySelector('.tab[data-view="tasks"]'), 1.4); }
         else if (msg.task.status === 'waiting_approval') sfx('attention');
-        else if (msg.task.status === 'failed') sfx('error');
+        else if (msg.task.status === 'failed') { sfx('error'); viz.moment('sorry'); }
         else if (msg.task.status === 'running' && prev.status === 'queued') sfx('start');
       }
       break;
     }
     case 'task_log': appendLog(msg.taskId, msg.entry); break;
     case 'settings': applySettings(msg.settings); break;
-    case 'approval_stale': toast('That request was already answered.'); settleTaskCard(msg.approvalId, null); break;
-    case 'task_event': addTaskCard(msg.event); if (msg.event.kind === 'approval') sfx('attention'); break;
-    case 'approval_resolved': settleTaskCard(msg.approvalId, msg.allowed); break;
-    case 'message_confirm': showMessageConfirm(msg.request); sfx('attention'); break;
-    case 'message_resolved': settleMessageConfirm(msg); break;
+    case 'voiceBudget': voiceCatalog.budget = msg.budget; break;
+    // A sentence set aside as not for Echo (the TV, another language): a "Was that for me?" chip, never silence.
+    case 'set_aside': if (msg.heard) wasThatForMe(msg.heard); break;
+    // The server changed how Echo listens ("go quiet", its name, three quiet minutes): said in a line, with a blink.
+    case 'listen_mode': applyListenMode(msg.mode); if (msg.line) liveCap.note(msg.line); viz.moment('wink'); break;
+    case 'listen_state': listenServer = { talk: msg.talk || null, closed: Boolean(msg.closed) }; renderWindow(); syncNativeMic(); break;
+    case 'approval_stale': toast('That request was already answered.'); settleTaskCard(msg.approvalId, null); answered(msg.approvalId, null); break;
+    case 'task_event':
+      addTaskCard(msg.event);
+      if (msg.event.kind === 'approval') { sfx('attention'); if (msg.event.approvalId) asks.add(msg.event.approvalId); renderOrb(); }
+      break;
+    case 'approval_resolved': settleTaskCard(msg.approvalId, msg.allowed); answered(msg.approvalId, msg.allowed); break;
+    case 'message_confirm': showMessageConfirm(msg.request); sfx('attention'); asks.add(msg.request.id); renderOrb(); break;
+    case 'message_resolved': settleMessageConfirm(msg); answered(msg.id, msg.sent); break;
+    case 'screen_request': screenClient.request(msg); break;
+    case 'screen_done': screenClient.done(msg.id); break;
+    case 'computer_state':
+      computerClient.state(msg);
+      activity.driving(msg);
+      // Busy on the Mac: its eyes go along the work instead of looking up in thought.
+      viz.setWorking(Boolean(msg.driving));
+      syncRunListen(Boolean(msg.driving));
+      caption.update({ driving: Boolean(msg.driving), app: msg.app || '', waitingForConfirm: Boolean(msg.waitingForConfirm) });
+      break;
+    case 'computer_confirm': computerClient.confirm(msg.request); sfx('attention'); asks.add(msg.request.id); renderOrb(); caption.update({ waitingForConfirm: true, question: computerClient.question() }); break;
+    case 'computer_resolved': {
+      computerClient.resolved(msg);
+      answered(msg.id, msg.allowed);
+      const question = computerClient.question();
+      caption.update({ waitingForConfirm: Boolean(question), question });
+      break;
+    }
+    case 'lesson_card': {
+      // The strip says which step the lesson is on, with Stop; its last card says how it ended.
+      activity.guide({ step: msg.step, total: msg.total, say: msg.current, finished: Boolean(msg.finished), done: Boolean(msg.complete) });
+      if (lessonOn !== !msg.finished) { lessonOn = !msg.finished; syncNativeMic(); }
+      // A lesson step passed: the orb nods; the last one: it celebrates (Mac app, Pointer.swift
+      // moment). Once per step: the last step's card comes again when the lesson ends.
+      const key = `${msg.id}:${msg.step}`;
+      if (msg.state === 'correct' && key !== lessonMoment) {
+        lessonMoment = key;
+        const moment = msg.step >= msg.total ? 'celebrate' : 'proud';
+        viz.moment(moment);
+        toApp({ type: 'companion', moment });
+      }
+      break;
+    }
+    case 'explain_card': showExplain(msg); break;
+    case 'browser': refreshChrome(); break;
+    case 'undo_offer': showUndo(msg.offer); break;
+    case 'undo_done': settleUndo(msg.id, msg.ok ? 'Undone ✓' : "Couldn't undo"); break;
+    case 'undo_failed': settleUndo(msg.id, msg.message || "Couldn't undo"); toast(msg.message || "Couldn't undo it."); break;
   }
 }
 
-/* ---------- Quick message confirmation card ---------- */
-const confirmCards = new Map();
-function showMessageConfirm(r) {
-  if (confirmCards.has(r.id)) return;
-  els.chatEmpty.hidden = true;
-  const card = document.createElement('div');
-  card.className = 'msg confirm-card';
-  const head = document.createElement('div');
-  head.className = 'confirm-head';
-  head.textContent = `${r.service === 'SMS' ? 'Text (SMS)' : 'iMessage'} to ${r.name} · ${r.masked}`;
-  const body = document.createElement('div');
-  body.className = 'confirm-text';
-  body.textContent = r.text;
-  const foot = document.createElement('div');
-  foot.className = 'confirm-actions';
-  const left = document.createElement('span');
-  left.className = 'muted confirm-left';
-  const cancel = Object.assign(document.createElement('button'), { className: 'ghost small', textContent: 'Cancel' });
-  const sendBtn = Object.assign(document.createElement('button'), { className: 'small', textContent: 'Send' });
-  const answer = (yes) => {
-    card.classList.add('sent');
-    cancel.disabled = sendBtn.disabled = true;
-    send({ type: 'message_confirm', id: r.id, send: yes });
+/* ---------- the gap filler: never a silent wait ---------- */
+// About 4 s after she heard you with nothing said yet, one quiet line under the orb says what
+// she's doing ("Reading the page…"), from the tool she's using. Nothing is spoken.
+const DOING = [
+  [/^(look_at_screen)/, 'Looking at your screen…'], [/^(observe_screen)/, 'Reading the page…'], [/^(compose_email)/, 'Writing the email…'],
+  [/^(click|act|batch_actions|hover|drag)/, 'Working on the screen…'], [/^(type_text|clear_field)/, 'Typing…'], [/^(find_file|reveal_file)/, 'Searching your files…'],
+  [/^(start_task|start_project|start_research|follow_up)/, 'Starting a worker…'], [/^(find_contact|send_imessage)/, 'Getting the message ready…'],
+  [/^(WebSearch|web)/i, 'Looking it up…'], [/^(open_url|open_app|open_settings_pane)/, 'Opening it…'], [/^(save_from_url)/, 'Downloading it…'],
+];
+const GAP_MS = 4000;
+const gapFiller = (() => {
+  /** @type {any} */
+  let timer = 0;
+  let doing = '';
+  return {
+    start() {
+      clearTimeout(timer);
+      doing = '';
+      timer = setTimeout(() => liveCap.note(doing || 'Still on it…'), GAP_MS);
+    },
+    /** @param {string} text a tool call, "name {args}" */
+    activity(text) {
+      doing = DOING.find(([re]) => re.test(String(text)))?.[1] || doing;
+    },
+    stop() {
+      clearTimeout(timer);
+      timer = 0;
+    },
   };
-  cancel.onclick = () => answer(false);
-  sendBtn.onclick = () => answer(true);
-  foot.append(left, cancel, sendBtn);
-  card.append(head, body, foot);
-  els.transcript.append(card);
-  scrollDown();
-  const tick = () => {
-    const s = Math.max(0, Math.round((Date.parse(r.expiresAt) - Date.now()) / 1000));
-    left.textContent = s ? `Expires in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : 'Expired';
-  };
-  tick();
-  confirmCards.set(r.id, { card, left, cancel, sendBtn, timer: setInterval(tick, 1000) });
-}
-function settleMessageConfirm(r) {
-  const c = confirmCards.get(r.id);
-  if (!c) return;
-  clearInterval(c.timer);
-  confirmCards.delete(r.id);
-  c.cancel.remove();
-  c.sendBtn.remove();
-  c.card.classList.add(r.sent ? 'is-sent' : 'is-cancelled');
-  c.left.textContent = r.stale ? 'Already handled' : r.sent ? 'Sent ✓' : r.error ? `Not sent: ${r.error}` : r.by === 'expired' ? 'Expired, not sent' : 'Cancelled';
-}
+})();
 
-/* ---------- Task update cards ---------- */
-// Task events show in the chat as compact cards, clearly not conversation: a task chip, a status
-// colour and one line. Approvals get Approve / Deny right on the card, and collapse once answered
-// (here, in the Workers tab, or by voice).
-const taskCards = new Map(); // approvalId -> { card, status, actions }
-const CARD = {
-  approval: ['waiting', 'Needs your OK'],
-  done: ['done', 'Done'],
-  failed: ['failed', 'Failed'],
-  stopped: ['stopped', 'Stopped'],
-  review: ['review', 'Ready to review'],
-};
-function showTask(id) {
-  document.querySelector('.tab[data-view="tasks"]')?.dispatchEvent(new Event('click'));
-  const node = els.taskList.querySelector(`[data-id="${id}"]`);
-  node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  node?.classList.add('flash');
-  setTimeout(() => node?.classList.remove('flash'), 1400);
-}
-/** @param {{ kind: string, taskId: number, title?: string, where?: string, text?: string, approvalId?: string, level?: string }} ev */
-function addTaskCard(ev) {
-  if (ev.approvalId && taskCards.has(ev.approvalId)) return;
-  els.chatEmpty.hidden = true;
-  const [tone, label] = CARD[ev.kind] || ['done', 'Update'];
-  const card = el('div', { className: `msg task-card ${tone}` });
-  card.setAttribute('role', 'group');
-  card.setAttribute('aria-label', `Task update: ${ev.title || `task ${ev.taskId}`}, ${label}`);
-  const chip = button(`#${ev.taskId}`, 'task-chip', () => showTask(ev.taskId));
-  chip.title = 'Show this task';
-  const status = el('span', { className: 'task-card-status' }, ev.kind === 'approval' && ev.level === 'risky' ? 'Needs your OK · risky' : label);
-  const head = el('div', { className: 'task-card-head' });
-  head.append(chip, el('span', { className: 'task-card-title' }, ev.title || ''), status);
-  const line = el('div', { className: 'task-card-line' }, ev.text || '');
-  line.title = ev.text || '';
-  card.append(head, line);
-  if (ev.kind === 'approval' && ev.approvalId) {
-    const actions = el('div', { className: 'task-card-actions' });
-    const answer = (allow) => {
-      card.classList.add('sending');
-      for (const b of actions.querySelectorAll('button')) b.disabled = true;
-      send({ type: 'approve', taskId: ev.taskId, approvalId: ev.approvalId, allow });
-    };
-    actions.append(button('Deny', 'ghost small', () => answer(false)), button('Approve', 'small', () => answer(true)));
-    card.append(actions);
-    taskCards.set(ev.approvalId, { card, status, actions });
-  }
-  els.transcript.append(card);
-  scrollDown();
-}
-/** An approval was answered: the card shrinks to one line saying how. @param {boolean | null} allowed */
-function settleTaskCard(approvalId, allowed) {
-  const c = approvalId && taskCards.get(approvalId);
-  if (!c) return;
-  taskCards.delete(approvalId);
-  c.actions.remove();
-  c.card.classList.remove('waiting', 'sending');
-  c.card.classList.add('handled', allowed === false ? 'denied' : 'allowed');
-  c.status.textContent = allowed === null ? 'Already answered' : allowed ? 'Approved ✓' : 'Denied';
-}
-/** After a reconnect: cards for approvals still waiting, and handled ones collapsed. */
-function syncTaskCards(list) {
-  const waiting = new Set();
-  for (const t of list || []) {
-    const a = t.pendingApproval;
-    if (!a) continue;
-    waiting.add(a.id);
-    addTaskCard({ kind: 'approval', taskId: t.id, title: t.title, where: t.project, text: a.reason, approvalId: a.id, level: a.level });
-  }
-  for (const id of [...taskCards.keys()]) if (!waiting.has(id)) settleTaskCard(id, null);
-}
-
-let toastTimer = null;
-function toast(text) {
-  els.toast.textContent = text;
-  els.toast.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (els.toast.hidden = true), 2600);
-}
-
-let costs = null;
-function renderCosts() {
-  if (!costs) return;
-  const t = costs.today;
-  els.cost.textContent = `Today $${t.total.toFixed(2)}`;
-  els.cost.title = `Today ≈ $${t.total.toFixed(2)}: assistant $${t.assistant.toFixed(2)}, workers $${t.workers.toFixed(2)}. API-equivalent estimate; with a claude.ai login this counts toward your plan's usage limits, not a bill.`;
-}
-
-const ACTIVE = ['running', 'queued', 'waiting_approval'];
-function activeCount() { return [...tasks.values()].filter((t) => ACTIVE.includes(t.status)).length; }
-function updateMeta() {
-  const active = activeCount();
-  const waiting = [...tasks.values()].filter((t) => t.pendingApproval).length;
-  els.meta.textContent = `${projects.length} projects · ${active ? `${active} working` : 'all quiet'}`;
-  els.taskCount.textContent = tasks.size ? `${active} active · ${tasks.size} total` : '';
-  els.tabCount.textContent = waiting || active || '';
-  els.tabCount.classList.toggle('attention', waiting > 0);
-  renderApprovalGroup();
-  updatePiano();
-}
-
-// Two or more low-risk requests (read-only lookups) waiting at once get one shared answer.
-const LOW_RISK = ['network_read', 'network_site'];
-function lowRiskPending() {
-  return [...tasks.values()].filter((t) => t.pendingApproval && LOW_RISK.includes(t.pendingApproval.level));
-}
-function renderApprovalGroup() {
-  const group = lowRiskPending();
-  els.approvalGroup.hidden = group.length < 2;
-  if (group.length < 2) return;
-  els.approvalGroupTitle.textContent = `${group.length} read-only lookups are waiting`;
-  els.approvalGroupSub.textContent = group.map((t) => t.title).join(' · ');
-}
-function answerGroup(allow) {
-  const items = lowRiskPending().map((t) => ({ taskId: t.id, approvalId: t.pendingApproval.id }));
-  if (items.length) send({ type: 'approve_many', items, allow });
-}
-els.groupAllow.onclick = () => answerGroup(true);
-els.groupDeny.onclick = () => answerGroup(false);
-
-/* ---------- Transcript ---------- */
-const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function scrollDown() { els.transcript.scrollTop = els.transcript.scrollHeight; }
-function addMsg(kind, text) {
-  els.chatEmpty.hidden = true;
-  const div = document.createElement('div');
-  div.className = `msg ${kind}`;
-  div.textContent = text;
-  els.transcript.append(div);
-  scrollDown();
-  return div;
-}
-
+/* ---------- The orb's busy and "heard you" states ---------- */
 let busy = false;
-function setBusy(b) { busy = b; renderOrb(); }
-
-/* ---------- Tasks ---------- */
-const SELF_LABEL = { review: 'Ready to review', no_changes: 'No changes', merged: 'Merged', discarded: 'Discarded', error: 'Review failed', stopped: 'Stopped' };
-const STATUS_LABEL = { queued: 'Queued', running: 'Running', waiting_approval: 'Needs approval', done: 'Done', failed: 'Failed', stopped: 'Stopped', interrupted: 'Interrupted' };
-const STATUS_CLASS = { queued: 'queued', running: 'running', waiting_approval: 'waiting', done: 'done', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted' };
-const SELF_CLASS = { review: 'waiting', no_changes: 'stopped', merged: 'done', discarded: 'stopped', error: 'failed', stopped: 'stopped' };
-const APPROVAL_TITLE = { network_read: 'Wants to run a read-only web lookup', network_site: 'Wants to send a request to a website', risky: 'Wants to do something that needs your OK' };
-
-function upsertTask(t) {
-  tasks.set(t.id, t);
-  els.emptyTasks.hidden = true;
-  let node = els.taskList.querySelector(`[data-id="${t.id}"]`);
-  if (!node) {
-    node = els.tpl.content.firstElementChild.cloneNode(true);
-    node.dataset.id = t.id;
-    // Answers name the exact request on screen, so a late click can't approve a newer one.
-    const answer = (allow, similar = false) => {
-      const cur = tasks.get(t.id)?.pendingApproval;
-      if (!cur) return;
-      node.querySelector('.approval').classList.add('sent');
-      send({ type: 'approve', taskId: t.id, approvalId: cur.id, allow, similar });
-    };
-    node.querySelector('.act-stop').onclick = () => send({ type: 'stop_task', taskId: t.id });
-    node.querySelector('.act-term').onclick = () => send({ type: 'open_terminal', taskId: t.id });
-    node.querySelector('.act-allow').onclick = () => answer(true);
-    node.querySelector('.act-deny').onclick = () => answer(false);
-    node.querySelector('.act-allow-similar').onclick = () => answer(true, true);
-    node.querySelector('.act-diff').onclick = () => showDiff(t.id);
-    node.querySelector('.act-merge').onclick = () => confirmMerge(t.id);
-    node.querySelector('.act-discard').onclick = () => selfApi('/api/self/discard', { taskId: t.id });
-    els.emptyTasks.after(node);
-    const log = node.querySelector('.task-log');
-    (t.logTail || []).forEach((e) => log.append(fmtLog(e)));
-    log.scrollTop = log.scrollHeight;
-    const last = (t.logTail || []).at(-1);
-    if (last) setLive(node, last);
+/** A lesson is on (you are doing its steps with your own hands). */
+let lessonOn = false;
+function setBusy(b) {
+  const was = busy;
+  busy = b;
+  // (The mic's end-of-sentence pause depends on whether Echo is in the middle of something.)
+  if (was !== b) syncNativeMic();
+  if (!b) { heardCue(false); activity.say(''); }
+  renderOrb();
+}
+// The instant "heard you" cue: no words, the mark (and caption bar) goes to thinking at once.
+let heard = false;
+/** @type {any} */
+let heardTimer = 0;
+function heardCue(on) {
+  clearTimeout(heardTimer);
+  heard = on;
+  if (on) {
+    heardTimer = setTimeout(() => heardCue(false), 30000);
   }
-  const selfState = t.kind === 'self' && t.self?.state;
-  const selfShown = selfState && selfState !== 'working' && !ACTIVE.includes(t.status);
-  const status = node.querySelector('.status');
-  status.className = `status ${selfShown ? SELF_CLASS[selfState] || 'stopped' : STATUS_CLASS[t.status] || 'stopped'}`;
-  node.querySelector('.status-text').textContent = selfShown ? SELF_LABEL[selfState] || selfState : STATUS_LABEL[t.status] || t.status;
-  node.querySelector('.task-kind').textContent = kindLabel(t);
-  node.querySelector('.task-kind').title = kindLabel(t);
-  node.querySelector('.task-title').textContent = t.title;
-  node.querySelector('.task-title').title = t.title;
-  node.classList.toggle('is-running', t.status === 'running');
-  node.classList.toggle('is-waiting', t.status === 'waiting_approval');
-  node.dataset.startedAt = t.startedAt || t.createdAt;
-  node.dataset.finishedAt = ACTIVE.includes(t.status) ? '' : t.finishedAt || t.updatedAt;
-  node.dataset.costUsd = t.costUsd || 0;
-  node.dataset.steps = t.steps || 0;
-  node.dataset.taskId = t.id;
-  renderMeta(node);
-  node.querySelector('.task-live').classList.toggle('on', ['running', 'queued'].includes(t.status));
-  if (t.status === 'queued' && !node.dataset.liveAt) node.querySelector('.live-text').textContent = 'Waiting for a free worker slot…';
-  node.querySelector('.task-summary').textContent = ACTIVE.includes(t.status) ? '' : t.summary || '';
-  node.querySelector('.task-instruction').textContent = t.instruction;
-  node.querySelector('.activity-summary').textContent = `Log · ${t.steps || 0} step${t.steps === 1 ? '' : 's'}`;
-  const files = node.querySelector('.task-files');
-  files.replaceChildren(
-    ...(t.files || []).map((f) => {
-      const chip = el('button', { className: 'file-chip', type: 'button', title: `Open ${f.path}` }, f.name);
-      chip.append(el('span', { className: 'how' }, f.how));
-      chip.onclick = () => send({ type: 'open_file', taskId: t.id, path: f.path });
-      return chip;
-    })
-  );
-  node.querySelector('.act-stop').hidden = !ACTIVE.includes(t.status);
-  node.querySelector('.act-term').hidden = !ACTIVE.includes(t.status);
-  const appr = node.querySelector('.approval');
-  const pa = t.pendingApproval;
-  appr.hidden = !pa;
-  if (pa && appr.dataset.approvalId !== pa.id) {
-    appr.dataset.approvalId = pa.id;
-    appr.classList.remove('sent');
-    appr.querySelector('.approval-title').textContent = APPROVAL_TITLE[pa.level] || APPROVAL_TITLE.risky;
-    appr.querySelector('.approval-text').textContent = pa.reason;
-    node.querySelector('.act-allow-similar').hidden = pa.level === 'risky';
-  }
-  // A stopped self task keeps its branch until you discard it (or ask Echo to continue it).
-  const review = node.querySelector('.review');
-  const stoppedSelf = selfState === 'stopped' && !ACTIVE.includes(t.status);
-  review.hidden = selfState !== 'review' && !stoppedSelf;
-  review.classList.toggle('stopped', stoppedSelf);
-  node.querySelector('.review-head strong').textContent = stoppedSelf ? 'Stopped before it finished' : 'Ready for your review';
-  node.querySelector('.act-diff').hidden = node.querySelector('.act-merge').hidden = stoppedSelf;
-  if (stoppedSelf) {
-    review.querySelector('.review-checks').textContent = 'Ask Echo to continue it, or discard its branch.';
-    review.querySelector('.review-stat').textContent = '';
-  }
-  if (selfState === 'review') {
-    review.querySelector('.review-stat').textContent = t.self.review.stat;
-    review.querySelector('.review-checks').innerHTML = Object.entries(t.self.review.checks)
-      .map(([k, v]) => `<span class="${v.ok ? 'pass' : 'fail'}">${escapeHtml(k)} ${v.ok ? '✓' : '✗ failed'}</span>`)
-      .join(' · ');
-  }
-  node.classList.toggle('attention', !!pa || selfState === 'review');
+  renderOrb();
 }
 
-const KIND = { code: 'Project', research: 'Research', self: 'Improving Echo' };
-function kindLabel(t) {
-  if (t.kind === 'self') return KIND.self;
-  return `${KIND[t.kind] || 'Project'} · ${t.project}`;
-}
 
-const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-function dayAndTime(iso) {
-  const d = new Date(iso);
-  const sameDay = d.toDateString() === new Date().toDateString();
-  return sameDay ? clock(iso) : `${d.toLocaleDateString([], { weekday: 'short' })} ${clock(iso)}`;
-}
-function duration(ms) {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
-  return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
-}
-function ago(iso) {
-  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-  return s < 5 ? 'now' : s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
-}
-function renderMeta(node) {
-  const { startedAt, finishedAt, costUsd, steps, taskId } = node.dataset;
-  const parts = [`#${taskId}`, dayAndTime(startedAt)];
-  parts.push(finishedAt ? `took ${duration(Date.parse(finishedAt) - Date.parse(startedAt))}` : duration(Date.now() - Date.parse(startedAt)));
-  parts.push(`$${Number(costUsd).toFixed(2)}`);
-  if (Number(steps) > 0) parts.push(`${steps} steps`);
-  node.querySelector('.task-meta').replaceChildren(...parts.map((p) => el('span', {}, p)));
-  const liveAt = node.dataset.liveAt;
-  if (liveAt) node.querySelector('.live-ago').textContent = ago(liveAt);
-}
-// Keep elapsed times and "12s ago" ticking.
-setInterval(() => els.taskList.querySelectorAll('.task').forEach((n) => !n.dataset.finishedAt && n.dataset.startedAt && renderMeta(n)), 1000);
-
-// The one-line "what it's doing now" under a running task.
-const LIVE_KINDS = { tool: '', claude: '', note: '', ask: 'Waiting for you: ', ok: '', deny: '', you: 'You: ', grant: '' };
-function setLive(node, e) {
-  if (!(e.kind in LIVE_KINDS)) return;
-  const text = `${LIVE_KINDS[e.kind]}${e.text.split('\n')[0]}`.slice(0, 240);
-  node.querySelector('.live-text').textContent = text;
-  node.querySelector('.live-text').title = e.text.slice(0, 600);
-  node.dataset.liveAt = e.t;
-  node.querySelector('.live-ago').textContent = ago(e.t);
-}
-
-function fmtLog(e) {
-  const time = new Date(e.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
-  return `${time}  ${e.kind.padEnd(6)} ${e.text.length > 600 ? e.text.slice(0, 600) + '…' : e.text}\n`;
-}
-function appendLog(id, entry) {
-  const log = els.taskList.querySelector(`[data-id="${id}"] .task-log`);
-  if (!log) return;
-  const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-  log.append(fmtLog(entry));
-  while (log.childNodes.length > 300) log.firstChild.remove();
-  if (stick) log.scrollTop = log.scrollHeight;
-  setLive(log.closest('.task'), entry);
-}
 
 /* ---------- Audio engine ---------- */
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const outAnalyser = ctx.createAnalyser();
 outAnalyser.fftSize = 512;
 outAnalyser.smoothingTimeConstant = 0.6;
-outAnalyser.connect(ctx.destination);
+// Echo's voice goes through its own volume, so a barge-in can lower it at once (soft barge-in).
+const voiceGain = ctx.createGain();
+outAnalyser.connect(voiceGain).connect(ctx.destination);
+/** Lower Echo's voice right away (you may be talking over her), or bring it back. */
+const duckVoice = (on) => voiceGain.gain.setTargetAtTime(on ? 0.18 : 1, ctx.currentTime, on ? 0.02 : 0.08);
 const unlockAudio = () => ctx.state === 'suspended' && ctx.resume();
+// After a long quiet stretch Echo answered in text and nothing was heard, though the page had
+// "played" every line (Oct 4, 2026: silent after two and a half hours, no stall, the Mac's
+// volume at 94). The sound output can go stale under a context that still says "running" (the
+// Mac slept, the output changed, the hardware idled). So before the first line after a quiet
+// stretch, and after anything that may have changed the output, the output is opened afresh:
+// the context is suspended and resumed, and the voice's own volume is put back to full.
+/** A quiet stretch this long, and the output is opened afresh before Echo speaks. */
+const QUIET_FRESH_MS = 90_000;
+let lastSoundAt = performance.now();
+let outputMayBeStale = false;
+/** @type {Promise<void> | null} */
+let freshening = null;
+/** Never longer than this: a line must not wait on the sound system. */
+const FRESH_MAX_MS = 600;
+function freshOutput(why) {
+  if (freshening) return freshening;
+  const idleS = Math.round((performance.now() - lastSoundAt) / 1000);
+  const before = ctx.state;
+  const work = (async () => {
+    try { await ctx.suspend(); } catch {}
+    try { await ctx.resume(); } catch {}
+    try { voiceGain.gain.cancelScheduledValues(ctx.currentTime); voiceGain.gain.setValueAtTime(1, ctx.currentTime); } catch {}
+  })();
+  freshening = Promise.race([work, new Promise((r) => setTimeout(r, FRESH_MAX_MS))]).then(() => {
+    outputMayBeStale = false;
+    lastSoundAt = performance.now();
+    timeline('audio.fresh', { why, before, after: ctx.state, idleS });
+    freshening = null;
+  });
+  return freshening;
+}
+/** Is the output due to be opened afresh before this line? (A reply under way is never touched.) */
+const outputDue = () => !sources.size && (outputMayBeStale || ctx.state !== 'running' || performance.now() - lastSoundAt > QUIET_FRESH_MS);
+const staleOutput = () => { outputMayBeStale = true; };
+navigator.mediaDevices?.addEventListener?.('devicechange', staleOutput);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) staleOutput(); });
+window.addEventListener('pageshow', staleOutput);
 document.addEventListener('pointerdown', unlockAudio);
 document.addEventListener('keydown', unlockAudio);
 
@@ -484,6 +426,8 @@ function sfx(kind) {
     listen: [[660, 0], [880, 0.07]],
     wake: [[784, 0], [1175, 0.09]], // "Hey Echo" heard
     stop: [[880, 0], [587, 0.07]],
+    windowOpen: [[740, 0], [988, 0.06]], // the conversation window opens (just talk)
+    windowClose: [[587, 0], [440, 0.09]], // …and closes ("hang up")
     send: [[988, 0]],
     start: [[523, 0], [659, 0.06]],
     done: [[523, 0], [659, 0.08], [784, 0.16], [1047, 0.24]],
@@ -498,7 +442,7 @@ function sfx(kind) {
     osc.type = 'sine';
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0.0001, t0 + at);
-    gain.gain.exponentialRampToValueAtTime(kind === 'send' ? 0.05 : 0.12, t0 + at + 0.015);
+    gain.gain.exponentialRampToValueAtTime(kind === 'send' ? 0.05 : kind.startsWith('window') ? 0.035 : 0.12, t0 + at + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.22);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t0 + at);
@@ -522,14 +466,15 @@ const sources = new Set(); // audio still sounding (the previous piece can overl
 function splitSentences(text) {
   return (text.match(/[^.!?\n]+[.!?]*["')\]]?/g) || [text]).map((s) => s.trim()).filter((s) => s.length > 1);
 }
-/** A whole reply at once: sentences grouped the same way as streamed ones (two, then ~30 words). */
-function speakAll(text, bubble = null) {
+/** A whole reply at once: grouped the same way as streamed ones (the first sentence on its own, so
+ * it's voiced sooner, unless it's a tiny opener; then ~30 words). */
+function speakAll(text, bubble = null, trace = undefined, line = undefined) {
   const groups = [];
   let cur = [];
   let words = 0;
   for (const s of splitSentences(text)) {
     const n = s.split(/\s+/).length;
-    const full = groups.length === 0 ? cur.length >= 2 || words >= 14 : words >= 8 && words + n > 30;
+    const full = groups.length === 0 ? cur.length >= 2 || words >= 3 : words >= 8 && words + n > 30;
     if (cur.length && full) {
       groups.push(cur.join(' '));
       cur = [];
@@ -541,7 +486,7 @@ function speakAll(text, bubble = null) {
   if (cur.length) groups.push(cur.join(' '));
   let prev = '';
   for (const g of groups) {
-    speak(g, bubble, { prev });
+    speak(g, bubble, { prev, trace, line, last: g === groups.at(-1) });
     prev = g;
   }
   karaoke.release(bubble);
@@ -553,14 +498,21 @@ const karaoke = createKaraoke({ now: () => ctx.currentTime - (ctx.outputLatency 
 
 /**
  * @param {string} text @param {HTMLElement | null} [bubble]
- * @param {{ prev?: string, soft?: boolean }} [o]  prev: the piece before (the voice carries its
- *   intonation on); soft: quieter, for a "didn't catch that"
+ * @param {{ prev?: string, soft?: boolean, trace?: string, line?: string, last?: boolean }} [o]  prev: the piece before (the voice carries its
+ *   intonation on); soft: quieter, for a "didn't catch that"; trace: the turn it belongs to (its first sound is timed);
+ *   line: the server's id for the line this piece belongs to, and last: it is that line's last piece (voiceEvent)
  */
-function speak(text, bubble = null, { prev = '', soft = false } = {}) {
-  if (!els.speakOut.checked || !text.trim()) return;
+let quietMode = false;
+function speak(text, bubble = null, { prev = '', soft = false, trace = undefined, line = undefined, last = false } = {}) {
+  if (line) lastLine = line;
+  if (quietMode || !els.speakOut.checked || !text.trim()) return;
   // You're holding Space to talk: the rest of the old reply stays quiet (it's in the chat).
-  if (listening && pttRecording) return;
-  const item = { text, gen: speechGen, chunk: karaoke.bind(bubble, text), words: null, soft };
+  if ((listening && pttRecording) || appMic.ptt) return;
+  // You cut in while she was talking: the rest of that reply stays quiet until you've been heard.
+  if (appMic.barge.holding) return;
+  // fresh: nothing was ahead of it, so its start tells how long the voice takes to start.
+  const item = { text, gen: speechGen, chunk: karaoke.bind(bubble, text), words: null, soft, trace, line, last, fresh: !playing && !speechQueue.length && !sources.size };
+  voiceEvent('queued', item);
   if (settings.ttsProvider !== 'browser') {
     item.controller = new AbortController();
     item.audio = fetch('/api/tts', {
@@ -593,10 +545,13 @@ async function playNext() {
     return;
   }
   playing = item;
+  caption.update({ echo: item.text });
   let browser = false;
   try {
     if (!item.audio) throw new Error('browser voice');
     const buffer = await item.audio;
+    if (item.gen !== speechGen) return;
+    if (outputDue()) await freshOutput(outputMayBeStale ? 'changed' : ctx.state !== 'running' ? ctx.state : 'quiet');
     if (item.gen !== speechGen) return;
     await new Promise((resolve) => {
       const src = ctx.createBufferSource();
@@ -606,10 +561,12 @@ async function playNext() {
       const at = Math.max(ctx.currentTime + 0.02, playEnd + pieceGap(lastSpoken, settings.speed));
       playEnd = at + length;
       lastSpoken = item.text;
-      if (item.chunk) {
-        const times = item.words ? alignTimings(item.text, item.words)?.map((t) => ({ s: Math.max(0, t.s - offset), e: Math.max(0, t.e - offset) })) : null;
-        karaoke.play(item.chunk, { start: at, duration: length, times, bounds: times ? undefined : { lead: 0.02, tail: 0.02 } });
-      }
+      const times = item.words ? alignTimings(item.text, item.words)?.map((t) => ({ s: Math.max(0, t.s - offset), e: Math.max(0, t.e - offset) })) : null;
+      if (item.chunk) karaoke.play(item.chunk, { start: at, duration: length, times, bounds: times ? undefined : { lead: 0.02, tail: 0.02 } });
+      // The caption pill lights up the same words at the same moments (on the wall clock).
+      const heardAt = Date.now() + (at - ctx.currentTime + (ctx.outputLatency || ctx.baseLatency || 0)) * 1000;
+      voiceStarted(item.trace, heardAt);
+      caption.update({ echoTimes: captionTimes(times || estimateTimings(item.text, length, { lead: 0.02, tail: 0.02 }), heardAt) });
       src.buffer = buffer;
       if (item.soft) {
         const g = ctx.createGain();
@@ -621,10 +578,14 @@ async function playNext() {
       const handOver = () => { if (!handed) { handed = true; resolve(); } };
       // onended never fires if the context stalls (suspended, device change), which would leave
       // Echo "speaking" forever and everything that waits on her stuck; so cap it on the wall clock.
-      const guard = setTimeout(() => { try { src.stop(); } catch {} ended(); }, (playEnd - ctx.currentTime) * 1000 + 3000);
+      const guard = setTimeout(() => { timeline('play.stalled', {}, item.trace); try { src.stop(); } catch {} ended(); }, (playEnd - ctx.currentTime) * 1000 + 3000);
       const ended = () => {
         clearTimeout(guard);
-        sources.delete(src);
+        if (sources.delete(src)) {
+          lastSoundAt = performance.now();
+          timeline('play.end', {}, item.trace);
+          voiceEvent('end', item, Math.round(length * 1000));
+        }
         karaoke.finish(item.chunk);
         handOver();
         if (!sources.size && !playing && !speechQueue.length) setSpeaking(false);
@@ -636,15 +597,41 @@ async function playNext() {
       item.handOver = handOver;
       if (speechQueue.length) handOver();
       src.start(at, offset, length);
+      timeline('play.start', { chars: item.text.length, ms: Math.round(heardAt - Date.now()), soft: Boolean(item.soft), ctx: ctx.state, gain: Math.round(voiceGain.gain.value * 100) / 100 }, item.trace);
+      voiceEvent('start', item, Math.round(heardAt - Date.now()));
     });
   } catch {
     if (item.gen !== speechGen) return;
     browser = true;
+    const from = Date.now();
     await browserSpeak(item);
+    voiceEvent('end', item, Date.now() - from);
   }
   if (browser) karaoke.finish(item.chunk);
   if (item.gen === speechGen) playNext();
   else if (playing === item) playing = null;
+}
+
+/** The id of the last line the server asked for, spoken or not. */
+let lastLine;
+/**
+ * Tell the server what the voice is doing with a line it asked for (lib/voicestate.js), so what
+ * waits for the line to end waits for the real end: 'queued' (it will be voiced), 'start' (audible
+ * in `ms`), 'end' (this piece is over after `ms`; `last`: so is the line). Only ids and numbers.
+ */
+function voiceEvent(event, item, ms = 0) {
+  if (!item.line) return;
+  send({ type: 'voice', event, id: item.line, ...(item.trace && { trace: item.trace }), chars: item.text.length, ms: Math.max(0, ms), ...(event === 'end' && item.last && { last: true }), ...(event === 'start' && item.fresh && { fresh: true }) });
+}
+
+/** Turns whose first sound has been reported. */
+const soundReported = new Set();
+/** Echo's voice for this turn becomes audible at `at` (wall clock): told to the server once per turn. */
+function voiceStarted(trace, at) {
+  if (!trace || soundReported.has(trace)) return;
+  soundReported.add(trace);
+  if (soundReported.size > 50) soundReported.delete(soundReported.values().next().value);
+  send({ type: 'voice_started', trace, at: Math.round(at) });
 }
 
 function browserSpeak(item) {
@@ -659,6 +646,12 @@ function browserSpeak(item) {
     const words = item.text.split(/\s+/).length;
     const guard = setTimeout(() => { speechSynthesis.cancel(); resolve(); }, (words / 2.5 / (settings.speed || 1)) * 1000 + 5000);
     u.onend = u.onerror = () => { clearTimeout(guard); resolve(); };
+    // The pill has no word timings from the browser's voice up front: an estimate at her pace.
+    u.onstart = () => {
+      voiceStarted(item.trace, Date.now());
+      caption.update({ echoTimes: captionTimes(estimateTimings(item.text, words / 2.6 / (settings.speed || 1)), Date.now()) });
+      voiceEvent('start', item);
+    };
     u.onboundary = (e) => { if (e.name === 'word' || e.name === undefined) karaoke.boundary(item.chunk, e.charIndex); };
     item.stop = () => { clearTimeout(guard); speechSynthesis.cancel(); resolve(); };
     speechSynthesis.speak(u);
@@ -669,7 +662,8 @@ function browserSpeak(item) {
 // them: dispatcher.setVoiceBusy).
 let voiceBusySent = false;
 function reportVoiceBusy(force = false) {
-  const b = Boolean(speaking || hearing || transcribing || listening && spaceHeld || wakeState === 'awake');
+  // An open answer window counts too, so a task update doesn't talk over your answer.
+  const b = Boolean(speaking || hearing || appMic.hearing || appMic.ptt || transcribing || listening && spaceHeld || wakeState === 'awake' || (autoListen.isOpen && autoListen.mode === 'answer'));
   if (b === voiceBusySent && !force) return;
   voiceBusySent = b;
   send({ type: 'voice_busy', busy: b });
@@ -679,12 +673,20 @@ function setSpeaking(on) {
   if (speaking === on) return;
   speaking = on;
   if (!on) {
+    // Nothing is queued or playing: every line the server asked for so far is over.
+    send({ type: 'voice', event: 'idle', id: lastLine });
     echoQuietUntil = performance.now() + ECHO_TAIL_MS;
     lastSpokeAt = performance.now();
-    // She asked you something: the wake listener takes your answer without "Hey Echo" (hush() clears
-    // lastSpoken first, so a hushed reply doesn't count).
-    if (/\?["')\s]*$/.test(lastSpoken)) setTimeout(() => { if (wakeListening() && !echoing() && wake.state === 'idle') wake.expectFollowUp(); }, ECHO_TAIL_MS + 50);
-  }
+    lastSpokeWall = Date.now();
+    // She asked you something: the mic opens for your answer once her voice has died away, no
+    // Space or "Hey Echo" needed (public/autolisten.js). hush() clears lastSpoken and the server's
+    // mark first, so a hushed reply doesn't count. Mid-turn (a tool call follows) waits for reply_end.
+    const question = !busy && (awaitsAnswer(lastSpoken) || replyAwaits);
+    if (!busy) questionOpen = question;
+    engagedFrom(lastSpokeAt);
+    replyAwaits = false;
+    autoListen.speechEnded({ question });
+  } else autoListen.speechStarted();
   if (on) pauseHandsFree();
   else resumeHandsFree();
   renderOrb();
@@ -700,9 +702,12 @@ function hush() {
   sources.clear();
   playEnd = 0;
   lastSpoken = '';
+  replyAwaits = false;
   speechSynthesis.cancel();
   karaoke.stopAll();
   setSpeaking(false);
+  // Whatever she says next starts at full volume (a soft barge-in may have lowered it).
+  duckVoice(false);
 }
 
 /* ---------- Speech input ---------- */
@@ -723,6 +728,59 @@ let tapLoaded = false;
 let micNodes = [];
 
 const serverEngine = () => sttActive !== 'browser';
+
+/* --- the one listening engine --- */
+// In the Mac app, its own mic is the only microphone and one state machine there decides
+// everything (macos/Sources/NativeMic.swift, VoiceMath.swift ListenMachine): Space, the mic button,
+// Control + Option, "Hey Echo", the conversation window, a driving session and hands-free. The
+// page says what to listen for (syncNativeMic) and draws the state the app reports (renderOrb,
+// renderWindow); public/nativemic.js turns the app's events into what happens here. The page
+// never opens its own mic for listening then. Everything below about the page's own mic (the
+// loudness detector, the pre-roll, the wake listener, the browser's recognizer) is the fallback
+// for a plain browser tab, or for when the app's mic can't be used.
+let nativeLevel = { v: 0, at: -Infinity }; // your voice level from the app's mic, for the orb
+const appMic = new AppMic({
+  post: (msg) => toApp(msg),
+  hush: () => hush(),
+  duck: (on) => duckVoice(on),
+  sfx: (name) => sfx(name),
+  surprised: () => { viz.moment('surprised'); toApp({ type: 'companion', moment: 'surprised' }); },
+  note: (text) => liveCap.note(text),
+  words: (text) => { liveCap.set(text); caption.update({ user: liveCap.text }); },
+  clearWords: () => liveCap.clear(),
+  level: (v) => { nativeLevel = { v, at: performance.now() }; },
+  // The words so far look finished: the server gets ahead while the app makes sure (never a turn by itself).
+  probablyDone: (text, notes) => send({ type: 'probably_done', text, ...notes }),
+  // The same pipeline as the page's own clips (sendClip → POST /api/utterance).
+  send: (wav, live, notes) => sendClip(new Blob([wav], { type: 'audio/wav' }), live, notes),
+  bargeOn: () => settings.bargeIn !== false,
+  // The browser's own voice can't be lowered: it stops at once instead.
+  canDuck: () => settings.ttsProvider !== 'browser',
+  confirmMs: () => Math.max(BARGE_CONFIRM_MS, (settings.endSilenceMs || 1300) + 400),
+  livePreview: () => settings.livePreview !== false,
+  sinceReplyMs: () => sinceReplyMs(),
+  followUpMs: () => followUpMs(),
+  // The server is told speech has begun (and when it came to nothing): a short sentence it is
+  // holding for the rest of the thought waits for this one (lib/server/speech.js onset).
+  heard: () => { send({ type: 'onset' }); if (autoListen.isOpen) autoListen.heard(); },
+  ended: (reason, delivered, why) => {
+    if (!delivered && reason !== 'ptt') send({ type: 'onset', over: true });
+    if (reason === 'ptt' && delivered) pttHint.used();
+    if (!autoListen.isOpen) return;
+    if (delivered) autoListen.answered();
+    else if (why === 'too_short') autoListen.notSpeech();
+  },
+  changed: () => renderOrb(),
+});
+/** Something can turn the app's sentences into text: Echo's server engine, or Apple's model in the app. */
+const nativeEngine = () => serverEngine() || Boolean(appMic.app.appleReady);
+/** This is the Mac app, it has a mic of its own, and it hasn't been refused or switched off (Settings). */
+const appAvailable = () => Boolean(nativeApp() && macPerms?.nativeMic && settings.nativeMic !== false && appMic.app.permission !== 'denied');
+/** The Mac app owns listening: its mic is allowed and its engine answers. The page's mic stays shut. */
+const inApp = () => appAvailable() && nativeEngine() && appMic.usable;
+/** In the Mac app, before it's known whether its mic can be used: the page's mic waits rather than open too. */
+let sttKnown = false;
+const appPending = () => Boolean(nativeApp()) && settings.nativeMic !== false && (!macPerms || !sttKnown || (Boolean(macPerms.nativeMic) && (!appMic.app.known || appMic.app.permission === 'ask')));
 
 // A mic stream held for hours can go dead (the Mac slept, the input device changed, or another
 // capture took the mic): it keeps delivering silence, so every clip transcribes as "." while the
@@ -776,6 +834,42 @@ let preRoll = [];
 let clip = null; // Float32Array chunks of the current utterance
 let pttRecording = false;
 let noiseFloor = 0.004;
+
+// Transcribe while you talk (public/sttstream.js, lib/sttstream.js): each clip's audio also goes to
+// Echo as it's recorded, so local Whisper works through it during your pauses. Its words so far
+// show live, and when you stop, the text is usually ready already. The finished clip is still sent
+// as before and is what counts.
+let streamOn = false; // local Whisper, and not turned off on the server (GET /api/stt)
+let streamSource = ''; // 'wake' or 'clip': who started the current stream
+const sttStream = new StreamClient({
+  rate: ctx.sampleRate,
+  sendJson: send,
+  sendBinary: (data) => ws?.readyState === 1 && ws.send(data),
+  threshold: () => Math.max(0.01, noiseFloor * 3.5),
+  // Whisper's words so far only when the browser's own live preview shows none.
+  wantPartials: () => settings.livePreview !== false && isBlank(liveText()),
+});
+/** @param {string} mode @param {Float32Array[]} frames what the clip holds already */
+function streamBegin(mode, frames) {
+  if (!streamOn || !serverEngine() || ws?.readyState !== 1) return;
+  sttStream.begin(mode, frames);
+  streamSource = mode === 'wake' ? 'wake' : 'clip';
+}
+/** Your words so far, from Whisper: shown when the browser's own live preview has none. */
+function onStreamPartial(msg) {
+  if (msg.id !== sttStream.id || settings.livePreview === false || !isBlank(liveText())) return;
+  liveCap.set(msg.text);
+  caption.update({ user: liveCap.text });
+}
+// Transcribed at your pause, and it's an instant command ("stop", "scroll down", "pause"): no need
+// to wait out the rest of the end-of-speech pause. If you've started talking again, it waits.
+const INSTANT_MAX_WORDS = 4;
+function onStreamReady(msg) {
+  if (!msg.instant || msg.id !== sttStream.id || !sttStream.paused || msg.words > INSTANT_MAX_WORDS) return;
+  if (hearing && !pttRecording) finishClip();
+  else if (streamSource === 'wake' && wake.state === 'awake') wake.finish();
+  else if (pttRecording && listening && !spaceHeld) stopListening();
+}
 let voicedMs = 0;
 let silentMs = 0;
 
@@ -786,9 +880,159 @@ let silentMs = 0;
 const ECHO_TAIL_MS = 400;
 let echoQuietUntil = 0;
 // Hands-free with the wake word on: speech right after Echo's reply is a follow-up, so it doesn't
-// need her name (the server checks: lib/heard.js addressesEcho).
-const FOLLOW_UP_MS = 15000;
+// need her name (Settings → follow-up window; the server checks: lib/addressed.js addressedToEcho).
+const followUpMs = () => (Number(settings.followUpSeconds) || 45) * 1000;
+/** How long ago her last reply ended (the server also lets on-topic speech through a while later). */
+const sinceReplyMs = () => (Number.isFinite(lastSpokeAt) ? Math.round(performance.now() - lastSpokeAt) : undefined);
 let lastSpokeAt = -Infinity;
+let lastSpokeWall = NaN; // the same moment on the wall clock, which the Mac app shares
+// Conversation mode: after her reply (the follow-up window, reset on every exchange) and for as
+// long as her question is still open, the Mac app's mic keeps listening without "Hey Echo", so a
+// plain "yeah" reaches her. The server still judges each sentence (lib/addressed.js).
+let questionOpen = false; // her last reply asked something, and nothing has answered it yet
+let engagedTimer = 0;
+
+/* --- the conversation window, shown (Stage 1 listening, lib/flags.ts session) --- */
+/** What the server says about Talk mode and "thanks" (lib/session.ts), kept in step by listen_state. */
+let listenServer = { talk: null, closed: false };
+/** The window right now, from what this page knows (public/convwindow.js). */
+function convWindow() {
+  return windowState({ working: Boolean(autoListen.driving), sinceReplyMs: sinceReplyMs(), asked: questionOpen, talk: listenServer.talk, closed: listenServer.closed, now: Date.now() });
+}
+/** The mic really is taking in everything said (never show "listening" when it isn't): in the Mac app, only when the app says so. */
+function micLive() {
+  return inApp() ? appMic.live : !micOff && (els.handsFree.checked || autoListen.isOpen);
+}
+let windowShown = false;
+/** The ring and its words under the orb, the caption bar's status, and a soft chime as it opens and closes. */
+function renderWindow() {
+  const w = convWindow();
+  // While Echo speaks or thinks, those states show instead; the window counts from when it stops.
+  const show = w.open && micLive() && (w.why === 'working' || (!speaking && !busy));
+  const box = $('convWindow');
+  box.hidden = !show;
+  // The countdown is the app's own, when it counts one (it closes the window, not the page).
+  const left = inApp() ? appMic.windowLeftMs() : 0;
+  if (left) w.leftMs = Math.min(left, w.totalMs || left);
+  if (show) {
+    $('cwLabel').textContent = windowLabel(w);
+    box.dataset.why = w.why;
+    const frac = w.totalMs ? Math.max(0, Math.min(1, w.leftMs / w.totalMs)) : 1;
+    $('cwLeft').style.strokeDashoffset = String((1 - frac) * 50.27);
+  }
+  caption.update({ windowLabel: show ? windowLabel(w) : '' });
+  // Chimes: opening after Echo speaks; closing when it runs out or "thanks" closes it (not when
+  // Echo starts talking again, which is the conversation going on).
+  if (show && !windowShown) sfx('windowOpen');
+  else if (!show && windowShown && !speaking && !busy) sfx('windowClose');
+  windowShown = show;
+}
+setInterval(renderWindow, 250);
+/** When the follow-up window runs out, the app's mic goes back to waiting for "Hey Echo". */
+function engagedFrom(now) {
+  clearTimeout(engagedTimer);
+  engagedTimer = setTimeout(renderOrb, Math.max(0, lastSpokeAt + followUpMs() - now) + 100);
+}
+
+// Auto-listen (public/autolisten.js): after a reply that asks you something, the mic opens for a
+// few seconds once she's completely done (her audio ended, plus the echo tail), with a soft pulse
+// and a thin "Listening…" line, no chime. Speak and it goes through the usual pipeline (silence
+// trimming, the server's phantom and own-voice filters); stay quiet and it closes by itself.
+// While she drives the Mac (computer use), it stays open between her words: "stop" ends the run,
+// anything else reaches her next step. Only the mic listens: no key or mouse input, so it never
+// counts as taking back control.
+let replyAwaits = false; // the server marked the current reply as waiting for an answer
+let autoCapture = false; // the page is capturing for auto-listen itself (not hands-free or push-to-talk)
+const autoListen = new AutoListen({
+  windowMs: autoListenMs(undefined),
+  tailMs: ECHO_TAIL_MS + 50,
+  canOpen: (mode) => canAutoListen(mode),
+  onOpen: () => autoOpened(),
+  onClose: (reason) => autoClosed(reason),
+});
+/** @param {'answer' | 'run'} mode */
+function canAutoListen(mode) {
+  if (micOff || wizard.isOpen() || !els.modal.hidden) return false;
+  if (!SR && !serverEngine()) return false;
+  // The page can't hear until you've clicked once (the Mac app's own mic can).
+  if (ctx.state !== 'running' && !inApp()) return false;
+  if (pttRecording || spaceHeld || appMic.ptt || wakeState === 'awake') return false;
+  if (listening && !els.handsFree.checked) return false;
+  if (echoing()) return false;
+  if (mode === 'run') return settings.listenDuringRuns !== false;
+  return autoListen.windowMs > 0;
+}
+function autoOpened() {
+  // Hands-free is listening already; the window only lets your answer through without "Echo".
+  // In the Mac app its mic is armed for the window (nativeMicPlan); the page doesn't capture.
+  if (!els.handsFree.checked && !inApp() && !appPending()) {
+    autoCapture = true;
+    ensureMic().catch(() => autoListen.close('no_mic'));
+    wake.reset();
+    startRec();
+  }
+  renderOrb();
+}
+/** @param {string} reason */
+function autoClosed(reason) {
+  const was = autoCapture;
+  // Echo started talking while you were mid-sentence: what you said so far still goes through
+  // (her voice isn't in it: the clip stops before her audio starts).
+  if (was && hearing && reason === 'speaking') finishClip();
+  autoCapture = false;
+  if (was) {
+    hearing = false;
+    clip = null;
+    sttStream.cancel();
+    silentMs = 0;
+    voicedMs = 0;
+    if (!listening) {
+      clearTimeout(silenceTimer);
+      stopRec();
+      resetLive();
+      if (!els.handsFree.checked && !wakeOn()) dropMic('auto-listen closed');
+    }
+  }
+  renderOrb();
+}
+/** When you last circled something with the light, and when Echo last heard or read something from you. */
+let drewAt = 0, heardAt = 0;
+/** Nothing heard this long after a drawing: you said nothing, so the box to type in opens. */
+const DRAW_BOX_AFTER_MS = 1400;
+/** Was your last message typed (in the window, or in the island's reply field) rather than spoken? */
+let typedLast = false;
+/** How long the island offers its reply field after a reply to something you typed. */
+const TYPED_OFFER_MS = 30000;
+/** The likely answers to Echo's question, as buttons above the composer (only while you are typing). @param {string[]} chips */
+function showQuickReplies(chips) {
+  const box = $('quickReplies');
+  box.replaceChildren(...chips.map((c) => {
+    const b = el('button', { type: 'button' }, c);
+    b.onclick = () => { showQuickReplies([]); caption.update({ asks: false }); sfx('send'); send({ type: 'user_text', text: c, typed: true }); };
+    return b;
+  }));
+  box.hidden = chips.length === 0;
+}
+/** The server's word on whether the reply that just ended waits for an answer. */
+function replyEnded(awaits, chips = []) {
+  // Ending on a question: the caption pill offers its reply field, for typing from another app.
+  // And when your last message was typed, you are likely to answer by typing: the field is
+  // offered for half a minute after any reply, and a question's likely answers come as chips.
+  const offer = awaits || typedLast;
+  caption.update({ asks: offer, chips: (awaits ? chips : []).join('\n'), ...(awaits ? {} : { offerMs: TYPED_OFFER_MS }) });
+  showQuickReplies(awaits && typedLast ? chips : []);
+  questionOpen = Boolean(awaits);
+  renderOrb();
+  if (!awaits) return;
+  // Still speaking: checked when she finishes (setSpeaking). Already done (or not speaking out
+  // loud at all): open now.
+  if (speaking || speechQueue.length) replyAwaits = true;
+  else if (autoListen.state === 'closed' && (quietMode || !els.speakOut.checked || performance.now() - lastSpokeAt < 3000)) autoListen.speechEnded({ question: true });
+}
+/** Echo is (or stopped) driving the Mac: keep listening for "stop" and new instructions meanwhile. */
+function syncRunListen(driving) {
+  autoListen.setDriving(driving && settings.listenDuringRuns !== false);
+}
 
 // Click-to-talk (the mic button or the Mac menu, not Space held) ends by itself: after a pause once
 // you've spoken, or after a while with no speech at all, so an open mic doesn't record the room.
@@ -823,17 +1067,35 @@ function onAudio(frame) {
   // Push-to-talk records until the tail after you let go (listening is already off by then).
   if (pttRecording && clip) {
     clip.push(frame);
+    sttStream.feed(frame);
     if (!spaceHeld) clickAutoEnd(frame, frameMs);
+    return;
+  }
+  // Auto-listen: the same detector as hands-free, while the window is open (never while she speaks).
+  if (autoCapture && !listening) {
+    if (serverEngine() && !echo) detectSpeech(frame, frameMs);
     return;
   }
   if (wakeListening()) {
     // Echo's own voice never reaches the wake listener: it's muted while she speaks and just after.
     if (echo) { if (wake.state !== 'idle' || wake.buf) wake.reset(); }
-    else wake.feed(frame);
+    else {
+      wake.feed(frame);
+      // After "Hey Echo", your request streams too (the wake word's own burst with it).
+      if (wake.state === 'awake') {
+        if (!sttStream.active) streamBegin('wake', wake.buf || []);
+        else sttStream.feed(frame);
+      }
+    }
     return;
   }
   if (!serverEngine() || !listening || echo || !els.handsFree.checked) return;
-  // Hands-free: energy detector with an adaptive noise floor.
+  handsFreeWatch.frame(frame);
+  detectSpeech(frame, frameMs);
+}
+
+/** Hands-free (and auto-listen): energy detector with an adaptive noise floor. */
+function detectSpeech(frame, frameMs) {
   let sum = 0;
   for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
   const level = Math.sqrt(sum / frame.length);
@@ -845,6 +1107,8 @@ function onAudio(frame) {
     if (!hearing && voicedMs > 120) {
       hearing = true;
       clip = [...preRoll];
+      streamBegin(autoCapture && autoListen.isOpen ? autoListen.mode : els.handsFree.checked ? 'hands-free' : 'push-to-talk', clip);
+      autoListen.heard();
       renderOrb();
     }
   } else {
@@ -853,6 +1117,7 @@ function onAudio(frame) {
   }
   if (hearing) {
     clip.push(frame);
+    sttStream.feed(frame);
     const clipMs = clip.length * frameMs;
     if (silentMs >= (settings.endSilenceMs || 1300) || clipMs > 30000) finishClip();
   }
@@ -871,11 +1136,23 @@ function finishClip() {
   const live = liveText();
   resetLive();
   const samples = chunks.reduce((n, c) => n + c.length, 0);
+  // Said inside an auto-listen window (an answer, or a word to her mid-run): no "Echo" needed.
+  const auto = autoListen.isOpen ? autoListen.mode : null;
+  const mode = autoCapture && auto ? auto : els.handsFree.checked ? 'hands-free' : 'push-to-talk';
   if (samples / ctx.sampleRate < 0.4) {
+    sttStream.cancel();
     // A click or a cough; but if the live listener caught words, the clip was cut short.
-    if (live) sendClip(null, live, { seconds: +(samples / ctx.sampleRate).toFixed(2), tooShort: true });
+    if (live) {
+      sendClip(null, live, { seconds: +(samples / ctx.sampleRate).toFixed(2), tooShort: true });
+      autoListen.answered();
+    } else {
+      // Never a silent loss: a tapped key is told so.
+      if (mode === 'push-to-talk') liveCap.note(dropLine('too_short', 'ptt'));
+      autoListen.notSpeech();
+    }
     return;
   }
+  autoListen.answered();
   const pcm = new Float32Array(samples);
   let o = 0;
   let peak = 0;
@@ -886,51 +1163,95 @@ function finishClip() {
   for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
   const notes = {
     seconds: +(samples / ctx.sampleRate).toFixed(2), peak: +peak.toFixed(4), rate: ctx.sampleRate, ctxState: ctx.state,
-    trackState: micTrack?.readyState, trackMuted: Boolean(micTrack?.muted), mode: els.handsFree.checked ? 'hands-free' : 'push-to-talk',
+    trackState: micTrack?.readyState, trackMuted: Boolean(micTrack?.muted), mode,
     // Did the browser really turn echo cancellation on? (Some inputs and browsers ignore the ask.)
     aec: micTrack?.getSettings?.().echoCancellation ?? null, echoTailMs: ECHO_TAIL_MS,
-    followUp: performance.now() - lastSpokeAt < FOLLOW_UP_MS,
+    followUp: Boolean(auto) || performance.now() - lastSpokeAt < followUpMs(), sinceReplyMs: sinceReplyMs(),
+    // A quiet room (no TV or music under the voice): a clear direct question needs no "Echo".
+    quiet: noiseFloor < 0.006, inApp: nativeApp(),
   };
   // Pure silence from the mic: the stream has gone dead. Open a fresh one for next time.
   if (peak < 0.0005) dropMic('the clip was pure silence');
-  sendClip(encodeWav(downsample(pcm, ctx.sampleRate, 16000), 16000), live, notes);
-}
-
-function downsample(pcm, from, to) {
-  if (from === to) return pcm;
-  const ratio = from / to;
-  const out = new Float32Array(Math.floor(pcm.length / ratio));
-  for (let i = 0; i < out.length; i++) {
-    const a = Math.floor(i * ratio), b = Math.min(pcm.length, Math.floor((i + 1) * ratio));
-    let sum = 0;
-    for (let j = a; j < b; j++) sum += pcm[j];
-    out[i] = sum / Math.max(1, b - a);
-  }
-  return out;
+  sendClip(encodeWav(downsample(pcm, ctx.sampleRate, 16000), 16000), live, notes, sttStream.end());
 }
 
 function encodeWav(samples, rate) {
-  const buf = new ArrayBuffer(44 + samples.length * 2);
-  const v = new DataView(buf);
-  const str = (off, s) => [...s].forEach((c, i) => v.setUint8(off + i, c.charCodeAt(0)));
-  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
-  for (let i = 0; i < samples.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 0x7fff, true);
-  return new Blob([buf], { type: 'audio/wav' });
+  return new Blob([wavBytes(samples, rate)], { type: 'audio/wav' });
 }
 
 const isBlank = (t) => !/[\p{L}\p{N}]/u.test(String(t || ''));
 
-// Nothing was heard, not even by the live listener: nothing goes to Echo. A small note in the
-// chat, and the first time in a row she says so, softly; after that, just the note.
+// Nothing was heard, not even by the live listener: nothing goes to Echo. A short note under the
+// voice that fades by itself (never over your words: liveCap only shows it with no caption up),
+// and the first time in a row she says so, softly; after that, just the note.
 let missedOnce = false;
 function didntCatch() {
-  els.state.textContent = "Didn't catch that — try again.";
-  addMsg('missed', "Didn't catch that.");
+  liveCap.note("Didn't catch that — try again");
   if (!missedOnce) speak("Sorry, I didn't catch that.", null, { soft: true });
   missedOnce = true;
+}
+
+// Hands-free dropped something that sounded like a real command (lib/addressed.js): show it
+// dimmed in the chat and the caption bar with a hint, so a drop is never silent. Nothing is spoken.
+const NOT_FOR_ME_HINT = 'Didn\'t catch that as meant for me — say "Echo…"';
+/** @param {{ looksLikeCommand?: boolean, askForMe?: boolean, heard?: string }} out */
+function notForMe(out) {
+  liveCap.clear({ now: true });
+  if (out.askForMe && out.heard) return wasThatForMe(out.heard);
+  liveCap.note(out.looksLikeCommand ? NOT_FOR_ME_HINT : 'Not for me? Say "Echo" first.');
+  if (!out.looksLikeCommand || !out.heard) return;
+  addMsg('missed dropped', `“${out.heard}” · ${NOT_FOR_ME_HINT}`);
+  caption.update({ user: `“${out.heard}” · ${NOT_FOR_ME_HINT}` });
+}
+
+// Echo wasn't sure it was meant for her (lib/addressed.js judgeAddressee): one small chip, never
+// silent. Tap ✓ (or just say it again with "Echo") and it goes through as said; it fades by itself.
+const ASK_FOR_ME_MS = 6000;
+/** The quiet chip stays a little longer, then goes. */
+const NOT_SURE_MS = 8000;
+/** What you last said aloud, for the quiet chip's "Send anyway". Never stored or logged. */
+let lastSaid = '';
+/**
+ * The one chip for words that did not go through: what it says, its button, and how long it
+ * stays. A tap sends the words on as the user's own say-so (`tapped`), which is never judged again.
+ * @param {string} heard @param {{ kind: string, words?: string, button: string, label: string, note: string, ms: number, remove?: boolean }} o
+ */
+function forMeChip(heard, o) {
+  const row = addMsg(`missed ask ${o.kind}`.trim(), '');
+  const words = document.createElement('span');
+  words.className = 'ask-words';
+  words.textContent = o.words ?? `“${heard}”`;
+  const yes = document.createElement('button');
+  yes.type = 'button';
+  yes.className = 'ask-yes';
+  yes.textContent = o.button;
+  yes.setAttribute('aria-label', o.label);
+  row.append(words, yes);
+  if (o.note) liveCap.note(o.note);
+  const done = (sent) => {
+    row.classList.add(sent ? 'taken' : 'faded');
+    yes.disabled = true;
+    if (o.remove) setTimeout(() => row.remove(), sent ? 0 : 600);
+  };
+  const timer = setTimeout(() => done(false), o.ms);
+  yes.addEventListener('click', () => {
+    clearTimeout(timer);
+    done(true);
+    send({ type: 'user_text', text: heard, confidence: 0.9, tapped: true });
+  }, { once: true });
+  return row;
+}
+/** @param {string} heard */
+function wasThatForMe(heard) {
+  forMeChip(heard, { kind: '', button: 'Was that for me? ✓', label: `Yes, "${heard}" was for Echo`, note: 'Was that for me? Tap ✓ in the window', ms: ASK_FOR_ME_MS });
+}
+/**
+ * Echo took your words and chose to stay quiet: a small, calm chip under them, gone after 8 s.
+ * "Send anyway" (or saying "yes, that was for you") sends the same words on as a sure sentence.
+ * @param {string} heard
+ */
+function notSureForMe(heard) {
+  forMeChip(heard, { kind: 'quiet', words: 'Not sure that was for me', button: 'Send anyway', label: `Send "${heard}" to Echo anyway`, note: '', ms: NOT_SURE_MS, remove: true });
 }
 
 /**
@@ -939,32 +1260,56 @@ function didntCatch() {
  * short to send), the live text goes as typed-in speech.
  * @param {Blob | null} wav @param {string} live @param {object} notes
  */
-async function sendClip(wav, live = '', notes = {}) {
+async function sendClip(wav, live = '', notes = {}, streamId = null) {
   if (!wav) {
-    if (!isBlank(live)) { sfx('send'); send({ type: 'user_text', text: live, confidence: 0.7 }); }
+    if (!isBlank(live)) { sfx('send'); send({ type: 'user_text', text: live, confidence: 0.7, mode: notes.mode }); }
     return;
   }
   transcribing = true;
-  els.interim.textContent = els.interim.textContent || 'Transcribing…';
-  renderOrb();
+  renderOrb(); // your words stay in the caption while they're transcribed
   sfx('send');
   try {
     const headers = { 'Content-Type': 'audio/wav', 'X-Echo-Clip': encodeURIComponent(JSON.stringify(notes)) };
+    // Streamed while you talked: the server may already have the text (lib/sttstream.js).
+    if (streamId) headers['X-Echo-Stream'] = streamId;
     if (!isBlank(live)) headers['X-Echo-Live'] = encodeURIComponent(JSON.stringify(live.slice(0, 2000)));
-    const res = await fetch('/api/utterance', { method: 'POST', headers, body: wav });
+    // The server not answering (it is restarting) with the app's text already in hand: the
+    // sentence is kept and sent once more after 2 s before anything is said (public/nativemic.js).
+    let res;
+    try {
+      res = await sendWithRetry(() => fetch('/api/utterance', { method: 'POST', headers, body: wav }), Boolean(notes.final?.text));
+    } catch {
+      addMsg('error', NOT_SENT_LINE);
+      return;
+    }
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || 'Transcription failed');
+    transcribing = false;
+    // Your words make way first, so a note never lands on top of them.
+    liveCap.clear({ now: Boolean(out.empty) });
     // Not a turn, and nothing to say about it: talk that wasn't for Echo, or her own voice.
-    if (out.reason === 'not_for_echo') els.state.textContent = 'Not for me? Say "Echo" first.';
-    else if (out.reason === 'own_voice') els.state.textContent = 'That was my own voice; ignored.';
-    else if (out.reason === 'wake_only') els.state.textContent = "I'm here. Say \"Hey Echo\" and your request.";
-    else if (out.empty) didntCatch();
-    else missedOnce = false;
+    if (out.reason === 'not_for_echo') notForMe(out);
+    else if (out.reason === 'not_a_command') {
+      if (out.askForMe && out.heard) wasThatForMe(out.heard);
+      else liveCap.note('Ignored while driving. Say “Echo…” or “stop”.');
+    }
+    else if (out.reason === 'held') liveCap.note('Noted for after this step. To stop now, say “Echo, stop”');
+    else if (out.reason === 'next_step') liveCap.note('Got it: I’ll do that right after this step. To stop now, say “stop”.');
+    else if (out.reason === 'own_voice') liveCap.note('That was my own voice; ignored');
+    else if (out.reason === 'wake_only') liveCap.note('I’m here. Say “Hey Echo” and your request.');
+    // The app's own text didn't come in time and nothing here could transcribe the clip: said so, not "blank".
+    else if (out.reason === 'stt_timeout' || out.reason === 'stt_unavailable') liveCap.note(NO_TEXT_LINE);
+    // "Didn't catch that" only when truly nothing was heard: not when your words showed live.
+    else if (out.empty && trulyEmpty({ live, heard: out.heard })) didntCatch();
+    else if (!out.empty) {
+      missedOnce = false;
+      questionOpen = false; // answered
+    }
   } catch (e) {
     addMsg('error', `Couldn't transcribe: ${e.message}`);
   } finally {
     transcribing = false;
-    els.interim.textContent = '';
+    liveCap.clear();
     renderOrb();
   }
 }
@@ -999,11 +1344,15 @@ if (SR) {
     }
     interimBuf = interim;
     if (serverEngine() && !settings.livePreview) return;
-    els.interim.textContent = (finalBuf + interim).trim();
-    if (!serverEngine() && els.handsFree.checked) {
+    const shown = (finalBuf + interim).trim();
+    liveCap.set(shown);
+    caption.update({ user: shown });
+    if (!serverEngine() && autoCapture && !listening) autoListen.heard();
+    if (!serverEngine() && (els.handsFree.checked || autoCapture)) {
       clearTimeout(silenceTimer);
       silenceTimer = setTimeout(flushBrowser, settings.endSilenceMs || 1300);
     }
+    if (serverEngine() && els.handsFree.checked && listening) handsFreeWatch.words(shown);
   };
   rec.onerror = (e) => {
     if (e.error === 'not-allowed') els.state.textContent = 'Microphone blocked — allow it in the address bar.';
@@ -1011,19 +1360,46 @@ if (SR) {
   rec.onend = () => {
     recOn = false;
     if (!serverEngine() && !els.handsFree.checked) flushBrowser();
-    if (listening && !speaking && (!serverEngine() || settings.livePreview)) try { rec.start(); } catch {}
+    if ((listening || autoCapture) && !speaking && (!serverEngine() || settings.livePreview)) try { rec.start(); } catch {}
   };
 }
 
 function flushBrowser() {
   clearTimeout(silenceTimer);
-  const text = finalBuf.trim() || (!els.handsFree.checked ? els.interim.textContent.trim() : '');
+  const text = finalBuf.trim() || (!els.handsFree.checked ? liveCap.text : '');
   const confidence = lastConfidence;
   resetLive();
   lastConfidence = 1;
-  els.interim.textContent = '';
-  if (!isBlank(text)) { sfx('send'); send({ type: 'user_text', text, confidence }); }
+  liveCap.clear();
+  const mode = els.handsFree.checked ? 'hands-free' : autoCapture ? autoListen.mode : 'push-to-talk';
+  if (!isBlank(text)) { sfx('send'); send({ type: 'user_text', text, confidence, mode }); }
+  if (autoCapture && !listening) autoListen.answered();
 }
+
+// Hands-free with a deaf mic (public/handsfreewatch.js): the preview shows your words but the
+// detector never hears them, so the turn would never end. At the pause, the words go as the turn,
+// and the mic is opened again.
+const handsFreeWatch = new HandsFreeWatch({
+  pauseMs: () => watchPauseMs(settings.endSilenceMs),
+  isHearing: () => hearing,
+  onDeaf: (words) => {
+    if (!listening || !els.handsFree.checked || speaking) return;
+    const text = liveText() || words;
+    resetLive();
+    liveCap.clear();
+    // The recognizer starts over (it restarts by itself), so these words can't come back.
+    stopRec();
+    sendClip(null, text, { mode: 'hands-free' });
+    dropMic('hands-free heard nothing while the live preview heard words');
+    ensureMic().catch(() => {});
+  },
+  // Late words of a clip that's already gone: tidied away, not sent again.
+  onStale: () => {
+    if (isBlank(liveText())) return;
+    resetLive();
+    if (!transcribing) liveCap.clear();
+  },
+});
 
 function startRec() {
   resetLive();
@@ -1034,24 +1410,43 @@ function stopRec() {
 }
 
 /* --- controls shared by both --- */
+/** Is push-to-talk (the app's or the window's) recording now? */
+const pttOn = () => listening || appMic.ptt;
+
 async function startListening() {
-  hush();
-  if (!SR && !serverEngine()) {
-    els.state.textContent = 'Voice input needs Chrome, Edge or Safari, or the local Whisper engine. You can still type.';
+  const cutIn = speaking; // you started while Echo was talking: the companion is startled
+  // In the Mac app, its mic records it (the same engine as Control + Option): held Space ends
+  // when it's let go, a clicked mic button on your pause.
+  if (inApp()) {
+    if (autoListen.state !== 'closed') autoListen.close('push_to_talk');
+    appMic.pttBegin(spaceHeld);
     return;
   }
+  hush();
+  if (cutIn) viz.moment('surprised');
+  if (!SR && !serverEngine()) {
+    els.state.textContent = 'Voice input isn’t available in this browser. You can still type.';
+    return;
+  }
+  const held = spaceHeld;
   try {
     await ensureMic();
   } catch {
     return;
   }
   if (listening) return;
+  // The key was let go while the mic was still opening (a quick tap on a cold mic): nothing was
+  // recorded, and the mic mustn't stay open waiting for a release that has already happened.
+  if (held && !spaceHeld) return liveCap.note(dropLine('too_short', 'ptt'));
+  // Push-to-talk (or the mic button) takes over from an open auto-listen window.
+  if (!els.handsFree.checked && autoListen.state !== 'closed') autoListen.close('push_to_talk');
   listening = true;
   wake.reset();
   sfx('listen');
   if (serverEngine() && !els.handsFree.checked) {
     pttRecording = true;
     clip = [...preRoll];
+    streamBegin('push-to-talk', clip);
     tap = { ms: 0, voicedMs: 0, silentMs: 0, spoke: false };
   }
   startRec();
@@ -1059,11 +1454,20 @@ async function startListening() {
 }
 
 function stopListening() {
+  if (appMic.ptt) {
+    appMic.pttEnd();
+    // Mid-run, the window for "stop" is open again once you've let go.
+    if (autoListen.driving) setTimeout(() => { if (!appMic.ptt && !speaking && autoListen.state === 'closed') autoListen.open('run'); }, PTT_TAIL_MS + 100);
+    return;
+  }
   if (!listening) return;
   listening = false;
+  if (!els.handsFree.checked) pttHint.used();
   sfx('stop');
   if (serverEngine()) {
     if (pttRecording) {
+      // Let go after a quiet moment: what's been said is transcribed now, during the tail.
+      if (sttStream.silentMs >= 150) sttStream.pause();
       // Keep the tail, then send.
       setTimeout(() => {
         pttRecording = false;
@@ -1073,6 +1477,8 @@ function stopListening() {
     stopRec();
   } else stopRec();
   renderOrb();
+  // Mid-run, listening for "stop" picks up again after you let go.
+  if (autoListen.driving) setTimeout(() => { if (!listening && !pttRecording && !speaking && autoListen.state === 'closed') autoListen.open('run'); }, PTT_TAIL_MS + 100);
 }
 
 function pauseHandsFree() {
@@ -1080,24 +1486,66 @@ function pauseHandsFree() {
   listening = false;
   hearing = false;
   clip = null;
+  sttStream.cancel();
   stopRec();
   if (rec && recOn) try { rec.abort(); } catch {}
 }
 function resumeHandsFree() {
-  if (els.handsFree.checked && !speaking) setTimeout(() => !speaking && startListening(), 250);
+  // (In the Mac app, hands-free is its mic's, and it never stopped: you can talk over Echo.)
+  if (els.handsFree.checked && !speaking && !inApp() && !appPending()) setTimeout(() => !speaking && !inApp() && startListening(), 250);
 }
 
 /* --- "Hey Echo": the wake word --- */
 // With the wake word on, the mic stays open and public/wake.js watches its loudness. Each burst of
 // speech is checked by this Mac's Whisper (POST /api/wake); nothing is sent anywhere else or saved
 // before "Hey Echo". Then a chime, the voice lights up, and your request is recorded until you
-// pause. Space push-to-talk works as always. The pill in the toolbar shows it's on and turns the
-// mic off completely.
-let micOff = pref.get('micOff', false);
+// pause. Space push-to-talk works as always.
+// completely.
+let micOff = false; // true in the "off" listening state: the mic opens only for a held key
+/**
+ * The one listening state (lib/listenmode.js): listening (anything said to Echo), resting (its
+ * name only) or off (the mic is off). It is a setting; the server changes it too ("go quiet", its
+ * name, three quiet minutes) and says so with a listen_mode message.
+ * @type {'listening' | 'resting' | 'off'}
+ */
+let listenMode = 'resting';
+/** The state the screen lock took the mic from ('' when it didn't). */
+let lockedFrom = '';
+const KEY_NAMES = { 'ctrl-opt': '⌃⌥', 'ctrl-cmd': '⌃⌘', 'opt-cmd': '⌥⌘', 'right-opt': 'right ⌥', fn: 'fn' };
+/** What the talk key is called here. */
+const talkKey = () => (inApp() ? KEY_NAMES[settings.pttHotkey] || '⌃⌥' : 'Space');
+/** Make the page listen the way `mode` says (no saving: applySettings and setListenMode call this). @param {string} mode */
+function applyListenMode(mode) {
+  if (mode !== 'listening' && mode !== 'resting' && mode !== 'off') return;
+  listenMode = mode;
+  micOff = mode === 'off';
+  const on = mode === 'listening';
+  if (els.handsFree.checked !== on) {
+    els.handsFree.checked = on;
+    pref.set('handsFree', on);
+    // In the Mac app its mic is armed for it (syncNativeMic); in a browser tab the page's own opens or closes.
+    if (!inApp() && !appPending()) on ? startListening() : stopListening();
+  }
+  if (micOff && !inApp() && listening && !spaceHeld) stopListening();
+  for (const b of $('listenSeg').children) b.setAttribute('aria-checked', String(/** @type {HTMLElement} */ (b).dataset.mode === mode));
+  $('listenHint').textContent = mode === 'listening' ? 'Just talk' : mode === 'resting' ? `Say “Echo”, or hold ${talkKey()}` : `Hold ${talkKey()}, or type`;
+  syncWake();
+  renderOrb();
+  syncNativeMic(true);
+}
+/** You changed how Echo listens (the menu, the pearl, the key): it applies now and is saved. @param {string} mode @param {string} [why] */
+function setListenMode(mode, why = '') {
+  if (mode === listenMode) return;
+  applyListenMode(mode);
+  timeline('listen.mode', { mode, why });
+  saveSetting({ listenMode: mode });
+}
 let wakeAvailable = false; // needs local Whisper (GET /api/stt)
 let wakeState = 'idle';
-const wakeOn = () => settings.wakeWord !== false && wakeAvailable && serverEngine() && !micOff && !els.handsFree.checked;
-const wakeListening = () => wakeOn() && !listening && !pttRecording;
+const wakeWanted = () => settings.wakeWord !== false && wakeAvailable && serverEngine() && !micOff && !els.handsFree.checked;
+// The Mac app's own mic listens for "Hey Echo" when it can (from any app); the page's is the fallback.
+const wakeOn = () => wakeWanted() && !inApp() && !appPending();
+const wakeListening = () => wakeOn() && !listening && !pttRecording && !autoCapture;
 const wake = new WakeListener({
   rate: ctx.sampleRate,
   check: async (samples) => {
@@ -1113,383 +1561,435 @@ const wake = new WakeListener({
       seconds: +(samples.length / ctx.sampleRate).toFixed(2), rate: ctx.sampleRate, ctxState: ctx.state, trackState: micTrack?.readyState,
       trackMuted: Boolean(micTrack?.muted), mode: 'wake', followUp: info.followUp, aec: micTrack?.getSettings?.().echoCancellation ?? null, echoTailMs: ECHO_TAIL_MS,
     };
-    sendClip(encodeWav(downsample(samples, ctx.sampleRate, 16000), 16000), '', notes);
+    sendClip(encodeWav(downsample(samples, ctx.sampleRate, 16000), 16000), '', notes, streamSource === 'wake' ? sttStream.end() : null);
   },
   onCancel: (why) => { if (why === 'no_request') sfx('stop'); },
   onState: (st) => {
     wakeState = st;
+    // Back to waiting without a request (reset, no request): drop the stream. A finished request
+    // resets first and hands over its clip right after, so this waits a moment.
+    if (st !== 'awake') queueMicrotask(() => { if (wake.state !== 'awake' && streamSource === 'wake') sttStream.cancel(); });
     renderOrb();
   },
 });
 /** Open or let go of the mic to match the wake-word setting, hands-free and the mic-off button. */
 function syncWake() {
-  if (!wakeOn()) {
+  if (inApp()) leavePageMic();
+  else if (!wakeOn()) {
     wake.reset();
     if (!listening && !els.handsFree.checked) dropMic('wake word off');
   } else ensureMic().catch(() => {});
-  renderWakePill();
 }
-function renderWakePill() {
-  const show = settings.wakeWord !== false && wakeAvailable && serverEngine() && !els.handsFree.checked;
-  els.wakePill.hidden = !show;
-  els.wakePill.classList.toggle('off', micOff);
-  els.wakePill.classList.toggle('awake', wakeState === 'awake');
-  els.wakePill.setAttribute('aria-pressed', String(!micOff));
-  els.wakePill.querySelector('.tb-text').textContent = micOff ? 'Mic off' : 'Hey Echo';
-  els.wakePill.dataset.tip = micOff ? 'Mic off. Click to listen for "Hey Echo" again (Space still works)' : ctx.state !== 'running' ? 'Click anywhere to start listening for "Hey Echo"' : 'Listening for "Hey Echo" on this Mac. Click to turn the mic off';
+/** The Mac app's mic has taken over: whatever the page's own mic was doing stops, and it's let go. */
+function leavePageMic() {
+  if (listening || pttRecording || autoCapture) {
+    listening = false;
+    pttRecording = false;
+    autoCapture = false;
+    hearing = false;
+    clip = null;
+    sttStream.cancel();
+    stopRec();
+    resetLive();
+  }
+  wake.reset();
+  dropMic('the Mac app listens');
 }
-els.wakePill.onclick = () => {
-  micOff = !micOff;
-  pref.set('micOff', micOff);
+/**
+ * Who listens is settled (the Mac app has answered, or this is a browser tab): the page's own
+ * always-on listening starts or stops to match. In the app, hands-free and "Hey Echo" are its mic's.
+ */
+function syncEngine() {
   syncWake();
-};
-// The page can't hear anything until you've clicked or pressed a key once (browser audio rules).
-ctx.addEventListener('statechange', renderWakePill);
-
+  if (!inApp() && !appPending() && els.handsFree.checked && !listening && !speaking) startListening();
+  renderOrb();
+}
 /* ---------- Orb + voice visual ---------- */
 function renderOrb() {
   viz.setState(vizState());
+  viz.setNeeds(asks.size > 0);
+  els.setHandsFree.checked = els.handsFree.checked;
   reportVoiceBusy();
-  heroSize();
-  updatePiano();
-  els.mic.classList.toggle('listening', listening);
+  // In the Mac app everything here follows the state its mic reports, and nothing else.
+  const app = inApp();
+  const ptt = appMic.ptt;
+  const heardNow = hearing || appMic.hearing;
+  els.mic.classList.toggle('listening', listening || ptt);
   els.mic.classList.toggle('speaking', speaking);
-  els.mic.classList.toggle('thinking', (busy || transcribing) && !listening && !speaking);
-  const engineName = { whisper: 'local Whisper', deepgram: 'Deepgram', browser: 'browser' }[sttActive];
-  const awake = wakeState === 'awake';
-  if (els.wakePill) renderWakePill();
-  els.state.innerHTML = transcribing ? 'Transcribing…'
-    : awake ? 'Listening… go ahead'
-    : hearing ? 'Hearing you…'
-    : listening ? (els.handsFree.checked ? `Listening (${engineName})…` : `Listening (${engineName}) · release <kbd>Space</kbd> to send`)
-    : speaking ? 'Speaking · <kbd>Esc</kbd> to hush, <kbd>Space</kbd> to cut in'
-    : busy ? 'Thinking…'
-    : els.handsFree.checked ? 'Hands-free: just talk'
-    : wakeOn() ? 'Say “Hey Echo” or hold <kbd>Space</kbd> · <kbd>Esc</kbd> to hush'
-    : 'Hold <kbd>Space</kbd> or click to talk · <kbd>Esc</kbd> to hush';
+  els.mic.classList.toggle('thinking', (busy || transcribing || heard) && !listening && !ptt && !speaking);
+  // The soft auto-listen cue: the voice gently pulses, and a thin "Listening…" line. Only while
+  // the mic really is open for what you say (an answer window, or a run).
+  const autoOpen = app ? appMic.live && appMic.app.reason !== 'handsfree' : autoListen.isOpen;
+  caption.update({ listening: listening || autoOpen || ptt, hearing: heardNow, speaking, busy: busy || transcribing || heard });
+  document.body.classList.toggle('auto-listening', autoOpen && !heardNow && !speaking);
+  // Plain words only (no engine names). Holding the key shows how to send the first few times
+  // (pttHint), then just "Listening". While Echo speaks, only the ways to cut in that work now
+  // are offered (public/nativemic.js stateLine).
+  // "Hands-free: just talk" is a hint for Home. Under a conversation that is going on it only sat
+  // there as stale text, so there the line is left empty.
+  els.state.innerHTML = stateLine({
+    transcribing,
+    awake: wakeState === 'awake' || appMic.awake,
+    hearing: heardNow,
+    ptt: ptt || listening,
+    pttHint: (ptt ? !appMic.clicked : !els.handsFree.checked && spaceHeld) && pttHint.show(),
+    // (The Mac app's shortcut isn't Space, so there it's "let go to send".)
+    byShortcut: ptt ? !spaceHeld : pttByShortcut,
+    open: !autoOpen ? '' : app ? (appMic.app.reason === 'run' ? 'run' : 'answer') : autoListen.mode,
+    speaking,
+    spaceCuts: app || !els.handsFree.checked,
+    talkCuts: app && appMic.live && settings.bargeIn !== false,
+    busy,
+    handsFree: app ? appMic.app.reason === 'handsfree' : els.handsFree.checked,
+    wake: app ? appMic.app.reason === 'wake' : wakeWanted(),
+    key: talkKey(), mode: listenMode,
+  });
+  if (els.chatEmpty.hidden && els.state.textContent === stateLine({ handsFree: true })) els.state.textContent = '';
   reportToMac();
+  reportCompanion();
+  syncNativeMic();
 }
 
 // The Mac app (macos/) drives listening and hands-free from its menu bar item, and shows their state.
 /** @param {boolean} [force] */
 function reportToMac(force) {
-  const state = { type: 'state', listening, handsFree: els.handsFree.checked };
+  const state = { type: 'state', listening: listening || appMic.ptt, handsFree: els.handsFree.checked, listenMode };
   const key = JSON.stringify(state);
   if (key === reportToMac.last && !force) return;
   reportToMac.last = key;
   /** @type {any} */ (window).webkit?.messageHandlers?.echoApp?.postMessage(state);
 }
 reportToMac.last = '';
+
+// The Mac app's companion orb (macos/Sources/Pointer.swift) breathes, listens, thinks and speaks
+// along with the voice: its state, and while listening or speaking the level, ~12 times a second.
+/** @type {Uint8Array | null} */
+let companionBuf = null;
+/** @type {any} */
+let companionTimer = 0;
+function companionLevel() {
+  const node = speaking ? outAnalyser : listening || wakeState === 'awake' || (autoCapture && hearing) ? micAnalyser : null;
+  if (!node) return 0;
+  if (!companionBuf || companionBuf.length !== node.fftSize) companionBuf = new Uint8Array(node.fftSize);
+  node.getByteTimeDomainData(companionBuf);
+  let sum = 0;
+  for (const v of companionBuf) sum += ((v - 128) / 128) ** 2;
+  return Math.min(1, Math.sqrt(Math.sqrt(sum / companionBuf.length)) * 2.2);
+}
+function reportCompanion() {
+  if (!nativeApp()) return;
+  const voice = vizState();
+  if (voice !== reportCompanion.last) {
+    reportCompanion.last = voice;
+    toApp({ type: 'companion', voice });
+  }
+  const live = voice === 'listening' || voice === 'speaking';
+  if (live && !companionTimer) {
+    companionTimer = setInterval(() => toApp({ type: 'companion', voice: reportCompanion.last, level: Math.round(companionLevel() * 100) / 100 }), 80);
+  } else if (!live && companionTimer) {
+    clearInterval(companionTimer);
+    companionTimer = 0;
+  }
+}
+reportCompanion.last = '';
 /** @type {any} */ (window).echoNative = {
-  toggleListening: () => (listening ? stopListening() : startListening()),
+  toggleListening: () => (pttOn() ? stopListening() : startListening()),
+  // Drawing with the light (the Mac app, TalkLayer.swift): what was circled goes to Echo as what
+  // "this" means. If nothing is heard in the next moment, the app opens its box there to type in.
+  /** @param {{ x0: number, y0: number, x1: number, y1: number }} box shares of the screen */
+  drew: (box) => {
+    const at = Date.now();
+    drewAt = at;
+    send({ type: 'circled', box });
+    setTimeout(() => { if (drewAt === at && heardAt < at) toApp({ type: 'drawBox' }); }, DRAW_BOX_AFTER_MS);
+  },
+  /** @param {string} text what was typed in the box about what was circled */
+  drawAsk: (text) => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    sfx('send');
+    send({ type: 'user_text', text: t, typed: true });
+  },
+  // The one listening state, from the Mac app: a double-tap of the key, its menu, the island's pearl, the screen locking.
+  /** @param {string} [why] */
+  toggleListenMode: (why = 'key') => setListenMode(listenMode === 'listening' ? 'resting' : 'listening', why),
+  /** @param {string} mode @param {string} [why] */
+  setListenMode: (mode, why = 'menu') => setListenMode(mode, why),
+  /** @param {boolean} locked */
+  screenLocked: (locked) => {
+    if (locked && listenMode !== 'off') { lockedFrom = listenMode; setListenMode('off', 'lock'); }
+    else if (!locked && lockedFrom) { lockedFrom = ''; if (listenMode === 'off') setListenMode('resting', 'unlock'); }
+  },
   /** @param {boolean} on */
   setHandsFree: (on) => { if (els.handsFree.checked !== Boolean(on)) els.handsFree.click(); },
   report: () => reportToMac(true),
   // The Mac app's "Check for Updates…" menu item.
-  checkForUpdates: () => { openSettingsDrawer(); $('updatesSection').scrollIntoView({ block: 'start' }); checkForUpdates(); },
+  checkForUpdates: () => { openSettings('you'); checkForUpdates(); },
+  // Push-to-talk from anywhere (macos/Sources/PushToTalk.swift) when the app's own mic can't
+  // record it: works like holding Space. (When it can, the app records it itself and the page
+  // follows its state: appMic.)
+  pttStart: () => {
+    if (els.handsFree.checked || wizard.isOpen() || spaceHeld) return;
+    unlockAudio();
+    spaceHeld = true;
+    pttByShortcut = true;
+    startListening();
+  },
+  pttStop: () => {
+    if (spaceHeld) { spaceHeld = false; stopListening(); }
+  },
+  // The chord turned out to be a shortcut (a key was pressed): what was recorded is dropped, and said so.
+  pttCancel: () => {
+    if (!spaceHeld) return;
+    spaceHeld = false;
+    cancelListening();
+    liveCap.note(dropLine('spoiled', 'ptt'));
+  },
+  /** @param {any} e what the Mac app's own mic says (macos/Sources/NativeMic.swift) */
+  nativeMic: (e) => {
+    const was = inApp();
+    const waiting = appPending();
+    appMic.on(e);
+    // Who owns the mic changed (the app's was allowed, or refused): the page's own follows.
+    if (e?.event === 'state' && (was !== inApp() || waiting !== appPending())) syncEngine();
+  },
+  /** @param {any} st */
+  permissions: (st) => { macPerms = st; renderPermsRow(); syncNativeMic(true); syncEngine(); window.dispatchEvent(new CustomEvent('echo-permissions', { detail: st })); },
+  // The caption bar's stop button (macos/Sources/Caption.swift): like Stop on the banner, and hush.
+  captionStop: () => { hush(); send({ type: 'interrupt' }); send({ type: 'computer_stop' }); },
+  // The pill's close button (x): it's gone until there's something new; stop offering the reply field.
+  captionClosed: () => caption.update({ asks: false }),
+  /** @param {boolean} allow Yes or No from the caption pill. */
+  captionConfirm: (allow) => computerClient.answerLatest(allow),
+  /** @param {string} text typed in the caption pill's reply field: exactly like a typed chat message. */
+  captionSend: (text) => {
+    const t = String(text || '').trim();
+    if (!t) return;
+    sfx('send');
+    caption.update({ asks: false });
+    send({ type: 'user_text', text: t, typed: true });
+  },
+  /** @param {any} p the Mac app's own choices (Summon shortcut, Open at login, Keep working after I quit) */
+  appPrefs: (p) => renderAppPrefs(p),
+  /** @param {any} r the first-run demo's look (it stays on this Mac) */
+  demoLook: (r) => window.dispatchEvent(new CustomEvent('echo-demo-look', { detail: r })),
 };
 
-// The voice: liquid sunset light behind glass. It reads Echo's voice while she speaks and your
-// mic while you talk (see voiceviz.js), and morphs smoothly between states.
-const darkScheme = matchMedia('(prefers-color-scheme: dark)');
-const viz = createVoiceViz(els.viz, {
-  audio: () => (speaking ? outAnalyser : listening || wakeState === 'awake' ? micAnalyser : null),
-  theme: darkScheme.matches ? 'dark' : 'light',
+/* --- what the Mac app's mic is asked to listen for (public/nativemic.js nativeMicPlan) --- */
+let pttByShortcut = false; // push-to-talk held with the Mac app's shortcut rather than Space
+/** @param {boolean} [force] send it even if nothing changed (the app is asked to report its state again) */
+function syncNativeMic(force = false) {
+  if (!nativeApp() || !macPerms?.nativeMic) return;
+  const w = convWindow();
+  const answerOpen = autoListen.isOpen && autoListen.mode === 'answer';
+  appMic.plan({
+    available: appAvailable(), setting: settings.nativeMic !== false, serverEngine: nativeEngine(), micOff,
+    handsFree: els.handsFree.checked, blocked: wizard.isOpen(),
+    driving: autoListen.driving, listenDuringRuns: settings.listenDuringRuns !== false,
+    answerOpen, wakeWord: wakeWanted(), engaged: w.open, resting: listenMode === 'resting',
+    // When the window runs out: the app closes it by itself, even if this page is asleep.
+    windowUntil: answerOpen ? autoListen.until : windowEndsAt(w, { replyAt: lastSpokeWall, talk: listenServer.talk }),
+    speaking: speaking || sources.size > 0, bargeIn: settings.bargeIn !== false, duckMedia: settings.duckMedia !== false,
+    endSilenceMs: settings.endSilenceMs, language: settings.sttLanguage,
+    // Echo is mid-step or a lesson is on: your hands are busy, so a sentence gets its full pause.
+    handsBusy: busy || lessonOn,
+  }, force);
+}
+
+/** Stop listening without sending anything. */
+function cancelListening() {
+  if (appMic.ptt) return appMic.pttCancel();
+  if (!listening) return;
+  listening = false;
+  pttRecording = false;
+  clip = null;
+  sttStream.cancel();
+  hearing = false;
+  stopRec();
+  resetLive();
+  liveCap.clear();
+  sfx('stop');
+  renderOrb();
+}
+
+// The companion: Echo's face (see ui/companion.js). Its rings spread with your mic while you talk,
+// a comet circles its rim while Echo thinks, and the rim pulses with her voice while she speaks.
+// One click on it (or Space / Enter) starts and stops listening: the button over it (#mic) takes
+// the click, and the companion tells that from play (quick clicks, petting), which never reaches the mic.
+const viz = createCompanion(els.viz, {
+  hit: els.mic,
+  // A tap on the pearl switches Listening and Resting (from Mic off: Resting). In a browser tab, with no key to hold, it still starts and stops a sentence.
+  onPress: () => (inApp() ? setListenMode(listenMode === 'listening' ? 'resting' : listenMode === 'off' ? 'resting' : 'listening', 'pearl') : pttOn() ? stopListening() : startListening()),
+  audio: () => (speaking ? outAnalyser : listening || wakeState === 'awake' || (autoCapture && hearing) ? micAnalyser : null),
+  // The Mac app's own mic has no analyser in the page: its level comes over the bridge.
+  level: () => (performance.now() - nativeLevel.at < 300 ? nativeLevel.v : null),
 });
-darkScheme.addEventListener('change', () => viz.setTheme(darkScheme.matches ? 'dark' : 'light'));
 function vizState() {
-  return speaking ? 'speaking' : listening || wakeState === 'awake' ? 'listening' : busy || transcribing ? 'thinking' : 'idle';
+  return vizStateFor({ speaking, listening: listening || wakeState === 'awake' || (autoCapture && hearing) || appMic.hearing || appMic.ptt, busy: busy || transcribing, heard });
 }
 
-// The voice is full size while Echo speaks, listens or works. After a few quiet seconds it eases
-// down (over ~4.5 s) to a small glow at the top and the chat takes the space; it grows back as
-// soon as something starts. The easing is CSS (.hero.compact), and reduced motion skips it.
-const HERO_IDLE_MS = 2500;
-/** @type {any} */
-let heroTimer = 0;
-function heroSize() {
-  // Hands-free keeps the mic open all the time, so there only hearing you counts as listening.
-  const active = speaking || busy || transcribing || hearing || wakeState === 'awake' || (listening && !els.handsFree.checked);
-  // On the empty welcome screen there's nothing to make room for.
-  if (active || !els.chatEmpty.hidden) {
-    clearTimeout(heroTimer);
-    heroTimer = 0;
-    els.hero.classList.remove('compact');
-    return;
-  }
-  if (heroTimer || els.hero.classList.contains('compact')) return;
-  heroTimer = setTimeout(() => {
-    heroTimer = 0;
-    heroSize.check();
-  }, HERO_IDLE_MS);
-}
-heroSize.check = () => {
-  const active = speaking || busy || transcribing || hearing || wakeState === 'awake' || (listening && !els.handsFree.checked);
-  if (!active && els.chatEmpty.hidden) els.hero.classList.add('compact');
-};
+// Watchdog: a "speaking" flag left on with nothing playing and nothing queued is cleared.
+setInterval(() => { if (speaking && !playing && !speechQueue.length) setSpeaking(false); }, 1000);
 
-/* ---------- Ambient piano ---------- */
-// Gentle generative piano while workers run and Echo is quiet; it ducks under her voice
-// and while you talk. On/off and the mood are remembered.
-const piano = new AmbientPiano(ctx, ctx.destination);
-piano.setMood(pref.get('pianoMood', 'upbeat'));
-let pianoOn = pref.get('piano', false);
-let pianoPreviewUntil = 0; // turning it on with nothing running plays a short preview
-// Full duck while Echo speaks or you're actually talking (push-to-talk, or hands-free hearing you).
-// An idle hands-free mic between turns only ducks lightly; it stays open all the time, so a full
-// duck there would silence the piano for good once Echo had spoken once.
-function pianoDuck() {
-  if (speaking || hearing || (listening && !els.handsFree.checked)) return true;
-  return listening ? 'light' : false;
-}
-function updatePiano() {
-  const audible = pianoOn && (activeCount() > 0 || Date.now() < pianoPreviewUntil);
-  if (audible !== piano.playing) piano.setPlaying(audible);
-  piano.setDucked(pianoDuck());
-  const blocked = audible && ctx.state !== 'running';
-  els.piano.classList.toggle('on', pianoOn);
-  els.piano.classList.toggle('sounding', piano.sounding);
-  els.piano.classList.toggle('waiting', pianoOn && !piano.sounding);
-  els.pianoToggle.setAttribute('aria-pressed', String(pianoOn));
-  const mood = PIANO_MOODS.find((m) => m.id === piano.mood);
-  els.pianoToggle.dataset.tip = !pianoOn ? 'Ambient piano' : `Piano · ${mood?.label || 'on'}${piano.sounding ? ' · playing' : ''}`;
-  els.pianoToggle.setAttribute('aria-label', !pianoOn ? 'Ambient piano: plays softly while workers run'
-    : blocked ? `Ambient piano on (${mood?.label}), but audio is paused by the browser. Click anywhere to resume.`
-    : !audible ? `Ambient piano on (${mood?.label}), waiting: it plays while workers run. Click to turn off.`
-    : piano.sounding ? `Ambient piano playing (${mood?.label}). Click to turn off.`
-    : `Ambient piano on (${mood?.label}), quiet while Echo speaks or listens. Click to turn off.`);
-}
-// Watchdog: end a preview, clear a stale "speaking" flag, and let the piano repair a stalled
-// scheduler, a suspended context or a duck that never came back up.
-setInterval(() => {
-  if (pianoPreviewUntil && Date.now() > pianoPreviewUntil) pianoPreviewUntil = 0;
-  if (speaking && !playing && !speechQueue.length) setSpeaking(false);
-  updatePiano();
-  const fixed = piano.watchdog();
-  if (fixed.length) console.warn('[piano] watchdog repaired:', fixed.join(', '));
-}, 1000);
-function setPiano(on) {
-  pianoOn = on;
-  pref.set('piano', on);
-  unlockAudio();
-  pianoPreviewUntil = on && !activeCount() ? Date.now() + 20000 : 0;
-  updatePiano();
-}
-function renderPianoMenu() {
-  els.pianoMenu.replaceChildren(
-    el('div', { className: 'menu-title' }, 'Ambient piano mood'),
-    ...PIANO_MOODS.map((m) => {
-      const item = el('button', { className: `menu-item${m.id === piano.mood ? ' on' : ''}`, type: 'button', role: 'menuitemradio' });
-      item.setAttribute('aria-checked', String(m.id === piano.mood));
-      item.append(el('span', { className: 'check' }, '✓'), el('span', {}, m.label), el('span', { className: 'hint' }, m.hint || ''));
-      item.onclick = () => {
-        closePianoMenu();
-        pickMood(m.id);
-      };
-      return item;
-    })
-  );
-}
-const closePianoMenu = () => closeMenus(true);
-// Picking a mood also turns the piano on, and plays a short preview when nothing is running.
-function pickMood(id) {
-  piano.setMood(id);
-  pref.set('pianoMood', id);
-  if (!pianoOn) setPiano(true);
-  else {
-    if (!activeCount()) pianoPreviewUntil = Date.now() + 20000;
-    updatePiano();
-  }
-}
-els.pianoToggle.onclick = () => setPiano(!pianoOn);
-
-/* ---------- Header menus ---------- */
-// The piano mood, voice and "…" menus: one open at a time, closed by a click outside or Esc;
-// the arrow keys move between items.
-const menus = [];
-function popover(btn, menu, render) {
-  menus.push({ btn, menu });
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const wasOpen = !menu.hidden;
-    closeMenus();
-    if (wasOpen) return;
-    render();
-    menu.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
-    (menu.querySelector('.menu-item.on') || menuItems(menu)[0])?.focus();
-  });
-}
-const menuItems = (menu) => /** @type {HTMLElement[]} */ ([...menu.querySelectorAll('.menu-item, .menu-switch input')]);
-function closeMenus(refocus = false) {
-  for (const { btn, menu } of menus) {
-    if (menu.hidden) continue;
-    menu.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
-    if (refocus) btn.focus();
-  }
-}
-document.addEventListener('click', (e) => { if (!menus.some(({ menu }) => menu.contains(/** @type {Node} */ (e.target)))) closeMenus(); });
-document.addEventListener('keydown', (e) => {
-  const open = menus.find(({ menu }) => !menu.hidden);
-  if (!open) return;
-  if (e.key === 'Escape') {
-    e.stopImmediatePropagation();
-    closeMenus(true);
-  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    const items = menuItems(open.menu);
-    const i = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
-    items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
-  } else if (e.code === 'Space' && open.menu.contains(document.activeElement)) {
-    e.stopImmediatePropagation(); // Space picks the item; it doesn't start talking
-  }
-}, true);
-
-popover(els.pianoMoodBtn, els.pianoMenu, renderPianoMenu);
-
-/** A menu row with a check mark: a toggle (menuitemcheckbox) or one of a set (menuitemradio). */
-function menuCheck(label, on, onclick, { role = 'menuitemcheckbox', hint = '', inline = false } = {}) {
-  const item = el('button', { className: `menu-item${on ? ' on' : ''}${inline ? ' inline' : ''}`, type: 'button' });
-  item.setAttribute('role', role);
-  item.setAttribute('aria-checked', String(on));
-  item.append(el('span', { className: 'check' }, '✓'), el('span', {}, label));
-  if (hint) item.append(el('span', { className: 'hint' }, hint));
-  item.onclick = onclick;
-  return item;
-}
-
-// Voice: read replies aloud or not, and which voice.
-function voiceChoices() {
-  const current = voiceCatalog.providers.find((p) => p.id === settings.ttsProvider);
-  if (settings.ttsProvider === 'browser') {
-    const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en')).map((v) => ({ id: v.name, name: v.name }));
-    return { voices, selected: settings.browserVoice || '' };
-  }
-  return { voices: current?.voices || [], selected: settings.voice };
-}
-const shortVoice = (name) => String(name || '').split(' (')[0];
-function renderVoiceButton() {
-  const { voices, selected } = voiceChoices();
-  const name = shortVoice(voices.find((v) => v.id === selected)?.name) || 'Voice';
-  const on = els.speakOut.checked;
-  els.voiceLabel.textContent = name;
-  els.voiceBtn.classList.toggle('muted', !on);
-  els.voiceBtn.dataset.tip = on ? `Voice · ${name}` : 'Replies are silent';
-  els.voiceBtn.setAttribute('aria-label', on ? `Voice: ${name}. Replies are read aloud.` : `Voice: ${name}. Replies are silent.`);
-}
-function renderVoiceMenu() {
-  const { voices, selected } = voiceChoices();
-  els.voiceList.replaceChildren(
-    ...(voices.length ? voices.map((v) =>
-      menuCheck(shortVoice(v.name), v.id === selected, () => {
-        closeMenus(true);
-        saveSetting(settings.ttsProvider === 'browser' ? { browserVoice: v.id } : { voice: v.id });
-      }, { role: 'menuitemradio', inline: true, hint: v.name.includes('(') ? v.name.slice(v.name.indexOf('(') + 1, -1) : '' })
-    ) : [el('div', { className: 'hint', style: 'padding: 4px 10px 8px' }, 'This engine has no voices to pick.')])
-  );
-}
-popover(els.voiceBtn, els.voiceMenu, renderVoiceMenu);
-els.voiceMore.onclick = () => { closeMenus(); openSettingsDrawer(); };
-
-// Narrow windows: the "…" menu holds what doesn't fit in the bar.
-function renderMoreMenu() {
-  const again = () => renderMoreMenu();
-  const newChat = el('button', { className: 'menu-item', type: 'button' });
-  newChat.setAttribute('role', 'menuitem');
-  newChat.append(el('span', { className: 'icon' }, '+'), el('span', {}, 'New chat'));
-  newChat.onclick = () => { closeMenus(); els.newConvo.click(); };
-  const settingsItem = el('button', { className: 'menu-item menu-link', type: 'button' });
-  settingsItem.setAttribute('role', 'menuitem');
-  settingsItem.append(el('span'), el('span', {}, 'Voice & settings…'));
-  settingsItem.onclick = () => { closeMenus(); openSettingsDrawer(); };
-  els.moreMenu.replaceChildren(
-    newChat,
-    el('div', { className: 'menu-sep', role: 'separator' }),
-    menuCheck('Hands-free', els.handsFree.checked, () => { els.handsFree.click(); again(); }, { hint: 'Talk without holding Space' }),
-    menuCheck('Read replies aloud', els.speakOut.checked, () => { els.speakOut.click(); again(); }),
-    menuCheck('Ambient piano', pianoOn, () => { setPiano(!pianoOn); again(); }, { hint: 'Plays softly while workers run' }),
-    el('div', { className: 'menu-title' }, 'Piano mood'),
-    ...PIANO_MOODS.map((m) => menuCheck(m.label, m.id === piano.mood, () => { pickMood(m.id); again(); }, { role: 'menuitemradio' })),
-    el('div', { className: 'menu-sep', role: 'separator' }),
-    settingsItem
-  );
-}
-popover(els.moreBtn, els.moreMenu, renderMoreMenu);
-
-/* ---------- Settings drawer ---------- */
+/* ---------- Settings (the modal's shell is public/settings.js) ---------- */
 function applySettings(s) {
   settings = { ...settings, ...s };
+  renderRules(Boolean(settings.flags?.rules));
+  renderSkills(Boolean(settings.flags?.skills));
   els.assistantName.textContent = settings.assistantName;
   document.title = `${settings.assistantName} · Echo`;
   els.setName.value = settings.assistantName;
   els.setUser.value = settings.userName || '';
+  $('greeting').textContent = greeting(settings.userName);
+  viz.setCalm(settings.companionLively === false);
+  viz.setReduced(settings.reduceMotion);
+  viz.setLook(settings.companionLook);
   els.setSpeed.value = settings.speed;
   els.speedVal.textContent = `${Number(settings.speed).toFixed(2)}×`;
   els.setSounds.checked = settings.sounds;
-  els.setPause.value = settings.endSilenceMs;
-  els.pauseVal.textContent = `${(settings.endSilenceMs / 1000).toFixed(1)}s`;
-  els.setSmart.checked = settings.smartCorrection;
-  els.setPreview.checked = settings.livePreview;
+  $('setDailyBudget').value = String(settings.dailyBudgetUsd ?? 0);
+  renderPause();
   els.setWake.checked = settings.wakeWord !== false;
-  els.setWakeSens.value = String(settings.wakeSensitivity ?? 0.5);
-  els.wakeSensVal.textContent = wakeSensLabel(settings.wakeSensitivity ?? 0.5);
-  syncWake();
-  els.setSttLang.value = settings.sttLanguage || 'en-IN';
-  els.setBeginner.checked = Boolean(settings.beginnerMode);
+  autoListen.windowMs = autoListenMs(settings.autoListenMs);
+  if (s.listenMode && s.listenMode !== listenMode) applyListenMode(s.listenMode);
+  syncEngine();
   els.setSafe.checked = Boolean(settings.safeMode);
-  $('setAutoUpdate').checked = Boolean(settings.autoUpdate);
-  renderProjectsDir();
+  // On by default in the developer copy only: the server says whether it's on (keepRecordingsOn).
+  $('setKeepRecordings').checked = settings.keepRecordingsOn ?? Boolean(settings.keepRecordings);
+  $('setKeepTranscript').checked = settings.keepTranscript !== false;
+  $('setSecondListen').checked = settings.secondListen !== false;
+  renderScreenSettings();
   renderSuggestions();
   renderVoiceControls();
   loadStt();
+  settingsPanel.refresh();
+}
+
+/** "How long to wait when you pause": three pauses (lib/settings.js PAUSE_CHOICES). A saved pause in between shows as the nearest. */
+const pauseChoices = /** @type {HTMLElement[]} */ ([...els.setPause.querySelectorAll('.chip')]);
+function renderPause() {
+  const ms = Number(settings.endSilenceMs) || 1300;
+  const nearest = pauseChoices.reduce((a, b) => (Math.abs(Number(b.dataset.ms) - ms) < Math.abs(Number(a.dataset.ms) - ms) ? b : a));
+  for (const c of pauseChoices) {
+    c.classList.toggle('on', c === nearest);
+    c.setAttribute('aria-checked', String(c === nearest));
+  }
+}
+for (const c of pauseChoices) c.onclick = () => saveSetting({ endSilenceMs: Number(c.dataset.ms) });
+
+/** A chip in a row of choices where one is on. */
+function choiceChip(label, on, pick) {
+  const b = el('button', { type: 'button', className: `chip${on ? ' on' : ''}` }, label);
+  b.setAttribute('aria-pressed', String(on));
+  b.onclick = pick;
+  return b;
 }
 
 function renderVoiceControls() {
-  els.personalities.innerHTML = '';
-  for (const p of voiceCatalog.personalities) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = `chip${p.id === settings.personality ? ' on' : ''}`;
-    b.textContent = p.label;
-    b.onclick = () => saveSetting({ personality: p.id });
-    els.personalities.append(b);
-  }
-  const providers = voiceCatalog.providers;
-  els.setProvider.replaceChildren(...providers.map((p) => new Option(p.label, p.id)));
-  els.setProvider.value = settings.ttsProvider;
-  els.elevenHint.hidden = providers.some((p) => p.id === 'elevenlabs');
-  const current = providers.find((p) => p.id === settings.ttsProvider);
-  let voices = current?.voices || [];
-  if (settings.ttsProvider === 'browser') {
-    voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en')).map((v) => ({ id: v.name, name: v.name }));
-  }
-  els.setVoice.replaceChildren(...voices.map((v) => new Option(v.name, v.id)));
-  els.setVoice.value = settings.ttsProvider === 'browser' ? settings.browserVoice || '' : settings.voice;
-  renderVoiceButton();
+  // Personality: the three ways Echo talks, and Beginner (plain words, the beginnerMode setting),
+  // which sits over whichever of the three was picked last.
+  const beginner = Boolean(settings.beginnerMode);
+  els.personalities.replaceChildren(
+    ...voiceCatalog.personalities.map((p) => choiceChip(p.label, !beginner && p.id === settings.personality, () => saveSetting({ personality: p.id, beginnerMode: false }))),
+    choiceChip('Beginner', beginner, () => saveSetting({ beginnerMode: true })),
+  );
+  // One list of voices, grouped by what makes them. Picking one also picks its engine
+  // (ttsProvider); a premium engine is listed only when its key is set up (GET /api/voices).
+  const groups = voiceCatalog.providers.map((p) => {
+    const voices = p.id === 'browser'
+      ? speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en')).map((v) => ({ id: v.name, name: v.name }))
+      : p.voices || [];
+    const g = document.createElement('optgroup');
+    g.label = VOICE_GROUPS[p.id] || p.label;
+    g.append(...voices.map((v) => new Option(v.name, `${p.id}:${v.id}`)));
+    return g;
+  }).filter((g) => g.children.length);
+  els.setVoice.replaceChildren(...groups);
+  els.setVoice.value = `${settings.ttsProvider}:${settings.ttsProvider === 'browser' ? settings.browserVoice || '' : settings.voice}`;
 }
+const VOICE_GROUPS = { kokoro: 'On this Mac (free)', elevenlabs: 'ElevenLabs (premium)', cartesia: 'Cartesia (premium)', browser: "macOS's own voices" };
 
 async function saveSetting(patch) {
   const res = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
   applySettings(await res.json());
 }
 
-function openSettingsDrawer() { els.settings.hidden = false; loadVocab(); }
-els.openSettings.onclick = openSettingsDrawer;
-els.closeSettings.onclick = () => { els.settings.hidden = true; };
+const settingsPanel = createSettingsPanel({
+  root: els.settings,
+  // Another dialog on top (a confirmation, the setup wizard) keeps Esc and Tab for itself.
+  blocked: () => !els.modal.hidden || wizard.isOpen(),
+  onOpen: () => { loadClaudeStatus(); toApp({ type: 'permissions' }); toApp({ type: 'appPrefs' }); els.openSettings.setAttribute('aria-expanded', 'true'); showLooks(); },
+  onClose: () => { els.openSettings.setAttribute('aria-expanded', 'false'); hideLooks(); },
+});
+// What happened: in the "more" menu, and the quiet "…" beside each of Echo's replies that opens its
+// turn. It shows in the dialog, over whatever is open (public/ui/timelineview.js).
+const happenedView = $('happenedView');
+const whatHappened = createTimelineView({
+  open: () => {
+    happenedView.hidden = false;
+    openModal('What happened', [happenedView], [button('Close', 'ghost', closeModal)]);
+  },
+});
+$('whatHappened').onclick = () => whatHappened.show();
+
+// The "Look" picker (Settings, Companion): each choice is the real companion in that
+// body, blinking and looking around. They live only while Settings is open, and draw only while
+// their section is showing (the companion stops by itself when it is off screen).
+const lookChoices = /** @type {HTMLInputElement[]} */ ([...document.querySelectorAll('#setLook input')]);
+/** @type {Array<ReturnType<typeof createCompanion>>} */
+let lookFaces = [];
+function showLooks() {
+  hideLooks();
+  lookFaces = lookChoices.map((c) => {
+    const face = createCompanion(/** @type {HTMLElement} */ (c.parentElement?.querySelector('.pearl')), { sleeps: false });
+    face.setLook(c.value);
+    face.setReduced(settings.reduceMotion);
+    return face;
+  });
+}
+function hideLooks() {
+  for (const f of lookFaces) f.destroy();
+  lookFaces = [];
+}
+// The companion in the window changes at once; the setting saves right behind it.
+for (const c of lookChoices) c.onchange = () => { viz.setLook(c.value); saveSetting({ companionLook: c.value }); };
+/** Section names from before there were five: links and the Mac app's menu still use them. */
+const OLD_SECTIONS = { general: 'you', account: 'you', updates: 'you', privacy: 'you', computer: 'mac', music: 'voice' };
+/** @param {string} [section] listening, voice, companion, mac or you */
+function openSettings(section) { settingsPanel.open(OLD_SECTIONS[section] || section); }
+els.openSettings.onclick = () => (settingsPanel.isOpen() ? settingsPanel.close() : openSettings());
+// ⌘, (or Ctrl+,) opens Settings, like any Mac app.
+document.addEventListener('keydown', (e) => {
+  if (e.key === ',' && (e.metaKey || e.ctrlKey) && !wizard.isOpen() && els.modal.hidden) { e.preventDefault(); openSettings(); }
+});
+els.setHandsFree.onchange = () => { if (els.handsFree.checked !== els.setHandsFree.checked) els.handsFree.click(); };
+
+// You & privacy: the Claude sign-in (GET /api/claude/status), in the words the setup wizard uses.
+async function loadClaudeStatus() {
+  const dot = $('claudeDot');
+  const show = (st) => {
+    const sum = signInSummary(st);
+    dot.className = `status-dot ${sum.tone}`;
+    $('claudeTitle').textContent = sum.title;
+    $('claudeDetail').textContent = sum.detail || (st?.signedIn ? 'Echo runs on this Claude account.' : 'Echo runs on your Claude account.');
+    $('claudeSignIn').textContent = st?.signedIn ? 'Switch account…' : 'Sign in…';
+    $('claudeSignIn').hidden = !st || (!st.installed && !st.signedIn);
+  };
+  show(null);
+  try { show(await fetch('/api/claude/status').then((r) => r.json())); } catch { show({ installed: true, signedIn: false, error: "Couldn't check the sign-in just now." }); }
+}
+$('claudeSignIn').onclick = () => { settingsPanel.close(); wizard.open('claude', { single: true, canClose: true }); };
 els.setName.onchange = () => els.setName.value.trim() && saveSetting({ assistantName: els.setName.value.trim() });
 els.setUser.onchange = () => saveSetting({ userName: els.setUser.value.trim() });
 els.setSpeed.oninput = () => { els.speedVal.textContent = `${Number(els.setSpeed.value).toFixed(2)}×`; };
 els.setSpeed.onchange = () => saveSetting({ speed: Number(els.setSpeed.value) });
 els.setSounds.onchange = () => saveSetting({ sounds: els.setSounds.checked });
-els.setProvider.onchange = () => {
-  const p = voiceCatalog.providers.find((x) => x.id === els.setProvider.value);
-  const patch = { ttsProvider: p.id };
-  if (p.voices?.length && !p.voices.some((v) => v.id === settings.voice)) patch.voice = p.voices[0].id;
-  saveSetting(patch);
+// The value is "engine:voice" (renderVoiceControls): the voice and the engine it belongs to are saved together.
+els.setVoice.onchange = () => {
+  const [provider, ...rest] = els.setVoice.value.split(':');
+  const voice = rest.join(':');
+  saveSetting(provider === 'browser' ? { ttsProvider: provider, browserVoice: voice } : { ttsProvider: provider, voice });
 };
-els.setVoice.onchange = () =>
-  saveSetting(settings.ttsProvider === 'browser' ? { browserVoice: els.setVoice.value } : { voice: els.setVoice.value });
 
 const PREVIEW_LINES = [
   "Hey! I'm {name}. Tell me what to build and I'll get the team on it.",
@@ -1501,340 +2001,182 @@ els.previewVoice.onclick = () => {
   unlockAudio();
   speakAll(PREVIEW_LINES[Math.floor(Math.random() * PREVIEW_LINES.length)].replace('{name}', settings.assistantName));
 };
-speechSynthesis.onvoiceschanged = () => settings.ttsProvider === 'browser' && renderVoiceControls();
+speechSynthesis.onvoiceschanged = () => renderVoiceControls();
 
-/* --- speech recognition settings --- */
+/* --- which recognizer is in use (GET /api/stt): nothing to choose, the page only follows it --- */
 async function loadStt() {
   try {
     const st = await fetch('/api/stt').then((r) => r.json());
     const wasServer = serverEngine();
     sttActive = st.active;
+    streamOn = Boolean(st.stream?.on);
     wakeAvailable = Boolean(st.wake?.available);
-    syncWake();
+    sttKnown = true;
+    syncEngine();
     if (rec && st.browserLang && rec.lang !== st.browserLang) rec.lang = st.browserLang;
-    const label = { auto: 'Auto (best available)', whisper: 'Local Whisper (free, private)', deepgram: 'Deepgram Nova-3 (cloud, paid)', browser: 'Browser (basic)' };
-    els.setStt.replaceChildren(
-      ...['auto', 'whisper', 'deepgram', 'browser'].map((id) => {
-        const o = new Option(label[id] + (id !== 'auto' && !st.engines[id].available ? ' — not set up' : ''), id);
-        o.disabled = id !== 'auto' && !st.engines[id].available;
-        return o;
-      })
-    );
-    els.setStt.value = st.choice;
-    const missing = Object.entries(st.engines).filter(([, e]) => !e.available).map(([id, e]) => `${label[id].split(' (')[0]}: ${e.why}`);
-    els.sttHint.textContent = `Using ${label[st.active].split(' (')[0]}.` + (missing.length ? ` ${missing.join(' · ')}` : '');
-    els.setSttLang.value = st.language || settings.sttLanguage || 'en-IN';
     if (wasServer !== serverEngine() && listening) { stopListening(); }
     renderOrb();
   } catch {}
 }
-async function loadVocab() {
-  const v = await fetch('/api/vocabulary').then((r) => r.json());
-  els.vocabWords.value = v.words.join('\n');
-  els.vocabFixes.replaceChildren(
-    ...Object.entries(v.corrections).map(([heard, meant]) => {
-      const chip = el('span', { className: 'fix-chip' }, `${heard} → ${meant}`);
-      const x = button('×', '', async () => {
-        await selfApi('/api/vocabulary', { removeCorrection: heard });
-        loadVocab();
-      });
-      x.title = 'Forget this correction';
-      chip.append(x);
-      return chip;
-    })
-  );
-}
-els.setStt.onchange = () => saveSetting({ sttEngine: els.setStt.value });
-els.setSttLang.onchange = () => saveSetting({ sttLanguage: els.setSttLang.value });
-els.setBeginner.onchange = () => saveSetting({ beginnerMode: els.setBeginner.checked });
 els.setSafe.onchange = () => saveSetting({ safeMode: els.setSafe.checked });
-$('setAutoUpdate').onchange = () => saveSetting({ autoUpdate: /** @type {HTMLInputElement} */ ($('setAutoUpdate')).checked });
-els.setPause.oninput = () => { els.pauseVal.textContent = `${(els.setPause.value / 1000).toFixed(1)}s`; };
-els.setPause.onchange = () => saveSetting({ endSilenceMs: Number(els.setPause.value) });
-els.setSmart.onchange = () => saveSetting({ smartCorrection: els.setSmart.checked });
-els.setPreview.onchange = () => saveSetting({ livePreview: els.setPreview.checked });
-els.setWake.onchange = () => saveSetting({ wakeWord: els.setWake.checked });
-const wakeSensLabel = (v) => (v < 0.34 ? 'strict' : v > 0.66 ? 'loose' : 'normal');
-els.setWakeSens.oninput = () => { els.wakeSensVal.textContent = wakeSensLabel(Number(els.setWakeSens.value)); };
-els.setWakeSens.onchange = () => saveSetting({ wakeSensitivity: Number(els.setWakeSens.value) });
-els.vocabSave.onclick = async () => {
-  await selfApi('/api/vocabulary', { words: els.vocabWords.value.split('\n') });
-  loadVocab();
+$('setKeepRecordings').onchange = (e) => saveSetting({ keepRecordings: /** @type {HTMLInputElement} */ (e.target).checked });
+$('setKeepTranscript').onchange = (e) => saveSetting({ keepTranscript: /** @type {HTMLInputElement} */ (e.target).checked });
+$('setSecondListen').onchange = (e) => saveSetting({ secondListen: /** @type {HTMLInputElement} */ (e.target).checked });
+
+/* --- the screen, the pointer and computer use (public/screen.js) --- */
+const screenClient = createScreenClient({
+  addNode: (node) => { els.transcript.append(node); els.chatEmpty.hidden = true; scrollDown(); },
+  toast,
+  send,
+});
+// Computer use (public/computer.js).
+const computerClient = createComputerClient({
+  addNode: (node) => { els.transcript.append(node); els.chatEmpty.hidden = true; scrollDown(); },
+  send,
+});
+let macPerms = /** @type {any} */ (null); // the Mac app's permissions, when it's the Mac app
+const setComputer = /** @type {HTMLInputElement} */ ($('setComputer'));
+const setPointer = /** @type {HTMLInputElement} */ ($('setPointer'));
+const setBargeIn = /** @type {HTMLInputElement} */ ($('setBargeIn'));
+const setLively = /** @type {HTMLInputElement} */ ($('setLively'));
+const setStepCaptions = /** @type {HTMLInputElement} */ ($('setStepCaptions'));
+const setBackground = /** @type {HTMLInputElement} */ ($('setBackground'));
+setBackground.onchange = () => saveSetting({ backgroundCursor: setBackground.checked });
+/** Settings only the Mac app can act on stay visible (so you know they exist), but greyed out in a browser. */
+function macOnly(mac) {
+  for (const row of els.settings.querySelectorAll('[data-mac-only]')) {
+    row.classList.toggle('needs-mac', !mac);
+    row.title = mac ? '' : 'Needs the Echo Mac app';
+    for (const c of row.querySelectorAll('input, select')) /** @type {HTMLInputElement} */ (c).disabled = !mac;
+  }
+}
+function renderScreenSettings() {
+  setPointer.checked = settings.pointer !== false;
+  setLively.checked = settings.companionLively !== false;
+  for (const c of lookChoices) c.checked = c.value === settings.companionLook;
+  for (const f of lookFaces) f.setReduced(settings.reduceMotion);
+  const mac = Boolean(nativeApp());
+  setStepCaptions.checked = settings.stepCaptions !== false;
+  // The Mac app applies them too (before the page loads, next time). The ones with no row any
+  // more are the same for everyone (lib/settings.js FIXED) and are still sent, so the app follows.
+  toApp({ type: 'prefs', screenAware: settings.screenAware !== false, pointer: setPointer.checked, pttHotkey: settings.pttHotkey || 'ctrl-opt', stepCaptions: setStepCaptions.checked,
+    orbSize: settings.orbSize || 'medium', reduceMotion: settings.reduceMotion || 'system', companionLook: settings.companionLook || 'auto' });
+  setComputer.checked = settings.computerUse === true;
+  setBackground.checked = settings.backgroundCursor === true;
+  toApp({ type: 'computerPrefs', computerUse: setComputer.checked, takeBack: settings.takeBack || 'pause', takeBackMovePx: settings.takeBackMovePx || 120, background: setBackground.checked });
+  setBargeIn.checked = settings.bargeIn !== false;
+  macOnly(mac);
+  // The step captions only matter while the companion points.
+  setStepCaptions.disabled = !mac || !setPointer.checked;
+  caption.refresh();
+  toApp({ type: 'permissions' });
+}
+setPointer.onchange = () => saveSetting({ pointer: setPointer.checked });
+setStepCaptions.onchange = () => saveSetting({ stepCaptions: setStepCaptions.checked });
+setLively.onchange = () => saveSetting({ companionLively: setLively.checked });
+setBargeIn.onchange = () => saveSetting({ bargeIn: setBargeIn.checked });
+// Echo for Chrome: its pairing code and whether it's connected (lib/browser.js).
+/** "Not now" on the pairing prompt: not shown again for the same reason until the window reloads. */
+let chromePairDismissed = '';
+let chromePairShown = '';
+async function refreshChrome() {
+  try {
+    const b = await (await fetch('/api/browser')).json();
+    $('chromeCode').textContent = b.code || '…';
+    const on = Boolean(b.extension || b.connected);
+    $('chromeDot').classList.toggle('on', on);
+    // What the server's socket says, not a guess: the extension only counts once Echo accepted it.
+    $('chromeDot').title = on ? `Connected${b.extensionStatus?.version ? ` (extension ${b.extensionStatus.version})` : ''}` : b.cdp ? "Chrome's debugging port is open" : b.detail || 'Not connected';
+    // The extension is knocking with no code, or a code this Echo doesn't know: one clear prompt.
+    const why = b.extensionStatus?.pairingNeeded ? b.extensionStatus.lastRefused?.why || 'code' : '';
+    $('chromePairCode').textContent = b.code || '…';
+    $('chromePairWhy').textContent = why === 'unpaired' ? "It's running in Chrome but hasn't been given Echo's code yet." : why ? "It's trying to connect with an old pairing code." : '';
+    chromePairShown = on ? '' : why;
+    $('chromePair').hidden = on || !why || chromePairDismissed === why;
+  } catch {}
+}
+const copyChromeCode = async () => {
+  try {
+    await navigator.clipboard.writeText($('chromeCode').textContent || '');
+    toast('Pairing code copied. Paste it into the Echo extension in Chrome.');
+  } catch {
+    toast("Couldn't copy. Select the code and copy it.");
+  }
 };
+$('chromeCopy').onclick = copyChromeCode;
+$('chromePairCopy').onclick = copyChromeCode;
+$('chromePairClose').onclick = () => {
+  chromePairDismissed = chromePairShown;
+  $('chromePair').hidden = true;
+};
+refreshChrome();
+
+setComputer.onchange = () => {
+  saveSetting({ computerUse: setComputer.checked });
+  // Clicking and typing need Accessibility; taking back control with any key needs Input Monitoring.
+  if (setComputer.checked && macPerms && !macPerms.accessibility) toApp({ type: 'requestPermission', kind: 'accessibility' });
+  else if (setComputer.checked && macPerms && !macPerms.input) toApp({ type: 'requestPermission', kind: 'input' });
+};
+
+/* --- the rows that belong to the Mac app (macos/Sources: Config.swift Prefs, HotKey.swift) ---
+ * The page asks with { type: 'appPrefs' } and the app answers window.echoNative.appPrefs({
+ * keepWorkingAfterQuit, openAtLogin, hotKey, hotKeys: [{ id, title }] }); a change goes back as
+ * { type: 'setAppPref', <key>: value } and the app answers again with what it now is (a shortcut
+ * another app holds is refused there). A row shows only once the app has said its value, so in a
+ * browser tab, or with an app that doesn't know the call yet, the rows aren't there. */
+const PERM_KINDS = ['screen', 'accessibility', 'microphone', 'input'];
+/** Permissions: one row; the app's own checklist window does the rest (macos/Sources/Permissions.swift). */
+function renderPermsRow() {
+  $('permsRow').hidden = !nativeApp() || !macPerms;
+  if (!macPerms) return;
+  const missing = PERM_KINDS.filter((k) => !macPerms[k]).length;
+  $('permsState').textContent = missing ? `${missing} to allow` : 'All allowed';
+}
+$('permsOpen').onclick = () => toApp({ type: 'showPermissions' });
+/** @param {{ keepWorkingAfterQuit?: boolean, openAtLogin?: boolean, hotKey?: string, hotKeys?: Array<{ id: string, title: string }> } | null} p */
+function renderAppPrefs(p) {
+  const has = (k) => Boolean(nativeApp()) && p != null && p[k] !== undefined;
+  $('hotKeyRow').hidden = !has('hotKey') || !Array.isArray(p?.hotKeys);
+  $('openAtLoginRow').hidden = !has('openAtLogin');
+  $('keepWorkingRow').hidden = !has('keepWorkingAfterQuit');
+  if (!$('hotKeyRow').hidden) {
+    $('setHotKey').replaceChildren(...(p?.hotKeys || []).map((k) => new Option(k.title, k.id)));
+    $('setHotKey').value = String(p?.hotKey);
+  }
+  $('setOpenAtLogin').checked = Boolean(p?.openAtLogin);
+  $('setKeepWorking').checked = Boolean(p?.keepWorkingAfterQuit);
+  // The app couldn't do it (a shortcut another app holds, a login item macOS refused): it says why.
+  if (p?.error) liveCap.note(String(p.error));
+}
+const setAppPref = (key, value) => toApp({ type: 'setAppPref', [key]: value });
+$('setHotKey').onchange = () => setAppPref('hotKey', $('setHotKey').value);
+$('setOpenAtLogin').onchange = () => setAppPref('openAtLogin', $('setOpenAtLogin').checked);
+$('setKeepWorking').onchange = () => setAppPref('keepWorkingAfterQuit', $('setKeepWorking').checked);
+// Back from System Settings: check again.
+window.addEventListener('focus', () => { if (macPerms) toApp({ type: 'permissions' }); });
+$('setDailyBudget').onchange = () => saveSetting({ dailyBudgetUsd: Number($('setDailyBudget').value) || 0 });
+els.setWake.onchange = () => saveSetting({ wakeWord: els.setWake.checked });
 
 async function loadSettings() {
   try {
     const [cat, s] = await Promise.all([fetch('/api/voices').then((r) => r.json()), fetch('/api/settings').then((r) => r.json())]);
     voiceCatalog = cat;
+    if (s.listen) listenServer = { talk: s.listen.talk || null, closed: Boolean(s.listen.closed) };
     applySettings(s);
   } catch {}
 }
 
-/* ---------- Self-improve mode ---------- */
-let selfStatus = { unlocked: false, hasPin: false };
-let selfTimer = null;
-function setSelfStatus(st) {
-  if (!st) return;
-  selfStatus = st;
-  els.selfBadge.hidden = !st.unlocked;
-  clearInterval(selfTimer);
-  if (st.unlocked) {
-    const tick = () => {
-      const s = Math.max(0, Math.round((Date.parse(st.expiresAt) - Date.now()) / 1000));
-      els.selfTimer.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    };
-    tick();
-    selfTimer = setInterval(tick, 1000);
-  }
-  if (st.pendingRequest && (els.modal.hidden || (modalKind === 'unlock' && shownRequest !== st.pendingRequest.id))) showUnlock(st.pendingRequest);
-  else if (!st.pendingRequest && modalKind === 'unlock' && !els.modal.hidden) closeModal(); // answered or expired elsewhere
-  els.pinCurrent.hidden = !st.hasPin;
-  els.pinHint.textContent = st.hasPin
-    ? 'A PIN is set. Unlocking self-improve mode and merging its changes need it.'
-    : 'Optional. When set, unlocking self-improve mode and merging its changes also need this PIN.';
-}
-els.selfBadge.onclick = () => selfApi('/api/self/lock', {});
-
-async function selfApi(url, body) {
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed');
-  return data;
-}
-
-// Modals keep their title and buttons fixed and scroll only the body, so the buttons stay
-// reachable in a small window. `onEnter` runs on Enter (except in a multi-line field).
-let modalEnter = null;
-let modalLocked = false; // Esc doesn't dismiss the unlock prompt; use Cancel
-let modalKind = ''; // 'unlock' while the self-improve confirmation is showing
-let shownRequest = null;
-function openModal(title, bodyNodes, actions, { narrow = false, onEnter = null, locked = false, hint = '', kind = '' } = {}) {
-  modalKind = kind;
-  els.modalTitle.textContent = title;
-  els.modalBody.replaceChildren(...bodyNodes);
-  els.modalActions.replaceChildren(...(hint ? [el('span', { className: 'key-hint' }, hint)] : []), ...actions);
-  $('modalCard').classList.toggle('narrow', narrow);
-  modalEnter = onEnter;
-  modalLocked = locked;
-  els.modal.hidden = false;
-  els.modalBody.scrollTop = 0;
-}
-// A self-improve confirmation that's still waiting comes back once another dialog closes.
-function closeModal() {
-  const was = modalKind;
-  els.modal.hidden = true;
-  modalEnter = null;
-  modalLocked = false;
-  modalKind = '';
-  const req = selfStatus.pendingRequest;
-  if (was !== 'unlock' && req && Date.parse(req.expiresAt) > Date.now()) showUnlock(req);
-}
-els.modal.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || !modalEnter || e.isComposing || /** @type {HTMLElement} */ (e.target).tagName === 'TEXTAREA') return;
-  if (/** @type {HTMLElement} */ (e.target).tagName === 'BUTTON') return; // let the focused button act
-  e.preventDefault();
-  modalEnter();
-});
-const el = (tag, props = {}, text = '') => Object.assign(document.createElement(tag), props, text ? { textContent: text } : {});
-const button = (label, cls, onclick) => Object.assign(el('button', { className: cls, type: 'button' }, label), { onclick });
-/** A button that shows it's working and can't be double-clicked while `fn` runs. */
-function actionButton(label, cls, fn) {
-  const b = button(label, cls, async () => {
-    if (b.disabled) return;
-    b.disabled = true;
-    try { await fn(); } finally { b.disabled = false; }
-  });
-  return b;
-}
-
-// A row of one-character boxes that fills like a single field: typing moves on, Backspace moves
-// back, arrows move, and pasting spreads the characters across the boxes.
-function segmentedInput(length, onChange) {
-  const wrap = el('div', { className: 'segs', role: 'group' });
-  const boxes = Array.from({ length }, (_, i) => {
-    const b = el('input', { className: 'seg', maxLength: 1, autocomplete: 'off', spellcheck: false, inputMode: 'text' });
-    b.setAttribute('autocapitalize', 'characters');
-    b.setAttribute('aria-label', `Character ${i + 1} of ${length}`);
-    return b;
-  });
-  const clean = (v) => v.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const value = () => boxes.map((b) => b.value).join('');
-  const fill = (from, text) => {
-    let i = from;
-    for (const ch of clean(text)) { if (i >= length) break; boxes[i++].value = ch; }
-    boxes.forEach((b) => b.classList.toggle('filled', !!b.value));
-    boxes[Math.min(i, length - 1)].focus();
-    onChange(value());
-  };
-  boxes.forEach((b, i) => {
-    b.addEventListener('input', () => {
-      const v = clean(b.value);
-      b.value = '';
-      if (v) fill(i, v);
-      else { b.classList.remove('filled'); onChange(value()); }
-    });
-    b.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !b.value && i > 0) { e.preventDefault(); boxes[i - 1].value = ''; boxes[i - 1].classList.remove('filled'); boxes[i - 1].focus(); onChange(value()); }
-      else if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); boxes[i - 1].focus(); }
-      else if (e.key === 'ArrowRight' && i < length - 1) { e.preventDefault(); boxes[i + 1].focus(); }
-    });
-    b.addEventListener('paste', (e) => { e.preventDefault(); fill(i, e.clipboardData?.getData('text') || ''); });
-    b.addEventListener('focus', () => b.select());
-  });
-  wrap.append(...boxes);
-  return { el: wrap, value, focus: () => boxes[Math.min(value().length, length - 1)].focus() };
-}
-
-function step(n, title, bodyNodes) {
-  const node = el('section', { className: 'step' });
-  node.append(el('span', { className: 'step-num' }, String(n)), el('div', { className: 'step-title' }, title), el('div', { className: 'step-body' }));
-  node.querySelector('.step-body').append(...bodyNodes);
-  return node;
-}
-
-// Unlocking needs a human at this screen: type the code shown here (plus the PIN, if set).
-// It can't be done by voice, so it can't be triggered by a mishearing or someone overhearing.
-function showUnlock(req) {
-  const len = req.code.length;
-  const codeStatus = el('div', { className: 'step-status' }, `Type the ${len} characters shown above.`);
-  const codeShow = el('div', { className: 'code-show' });
-  codeShow.setAttribute('aria-label', `Code: ${req.code.split('').join(' ')}`);
-  codeShow.append(...req.code.split('').map((ch) => el('span', {}, ch)));
-  const segs = segmentedInput(len, (v) => {
-    const done = v.length === len;
-    const ok = done && v === req.code;
-    step1.classList.toggle('done', ok);
-    step1.classList.toggle('bad', done && !ok);
-    codeStatus.textContent = ok ? 'Code matches.' : done ? "That doesn't match the code above. Check each character." : `Type the ${len} characters shown above.`;
-    if (ok) (req.needsPin ? pinIn : confirm).focus();
-  });
-  const step1 = step(1, 'Type this code', [codeShow, el('label', {}, 'Your entry'), segs.el, codeStatus]);
-
-  const pinIn = el('input', { type: 'password', inputMode: 'numeric', className: 'pin-in', placeholder: '••••', autocomplete: 'off', id: 'unlockPin' });
-  const pinStatus = el('div', { className: 'step-status' }, 'The PIN you set in Settings.');
-  pinIn.addEventListener('input', () => { pinIn.classList.remove('invalid'); step2.classList.remove('bad'); pinStatus.textContent = 'The PIN you set in Settings.'; });
-  const step2 = step(2, 'Enter your PIN', [pinIn, pinStatus]);
-  const err = el('div', { className: 'err', role: 'alert' });
-
-  const body = [
-    el('p', {}, `${settings.assistantName} wants to edit its own code:`),
-    el('div', { className: 'instruction' }, req.instruction),
-    el('p', { className: 'hint' }, `It works on a separate branch, and nothing changes until you review the diff and click Merge. The unlock lasts 30 minutes or one task, whichever comes first.${req.firstTime ? ' First time only: Echo will create a git repository with a baseline commit.' : ''}`),
-    step1,
-    ...(req.needsPin ? [step2] : []),
-    err,
-  ];
-  const submit = async () => {
-    err.textContent = '';
-    const code = segs.value();
-    if (code !== req.code) {
-      step1.classList.add('bad');
-      codeStatus.textContent = code.length < len ? `Type all ${len} characters of the code.` : "That doesn't match the code above. Check each character.";
-      segs.focus();
-      return;
-    }
-    if (req.needsPin && !pinIn.value.trim()) {
-      step2.classList.add('bad');
-      pinIn.classList.add('invalid');
-      pinStatus.textContent = 'Enter your PIN to continue.';
-      pinIn.focus();
-      return;
-    }
-    try {
-      await selfApi('/api/self/confirm', { requestId: req.id, code, pin: pinIn.value });
-      closeModal();
-    } catch (e) {
-      // The code was checked above, so a rejection here is the PIN (or an expired request).
-      if (req.needsPin && /PIN/.test(e.message)) {
-        step2.classList.add('bad');
-        pinIn.classList.add('invalid');
-        pinStatus.textContent = "That PIN isn't right. Too many wrong tries locks self-improve for 15 minutes.";
-        pinIn.select();
-      } else err.textContent = e.message;
-    }
-  };
-  const confirm = actionButton('Unlock & start', 'ok', submit);
-  const cancel = button('Cancel', 'ghost', async () => {
-    await selfApi('/api/self/cancel', {}).catch(() => {});
-    closeModal();
-  });
-  openModal('Allow self-improvement?', body, [cancel, confirm], { narrow: true, onEnter: () => confirm.click(), locked: true, hint: 'Enter to confirm', kind: 'unlock' });
-  shownRequest = req.id;
-  segs.focus();
-}
-
-async function showDiff(taskId) {
-  const review = await fetch(`/api/self/diff?taskId=${taskId}`).then((r) => r.json());
-  const pre = el('pre', { className: 'diff' });
-  for (const line of (review.diff || '').split('\n')) {
-    const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : line.startsWith('@@') ? 'hunk' : '';
-    pre.append(el('span', { className: cls }, line + '\n'));
-  }
-  const checks = Object.entries(review.checks || {}).map(([k, v]) => {
-    const d = el('details');
-    d.append(el('summary', {}, `${k}: ${v.ok ? 'passed' : 'FAILED'}`), el('pre', { className: 'diff' }, v.output));
-    return d;
-  });
-  openModal(`Self-improvement #${taskId}: changes`, [el('pre', { className: 'review-stat' }, review.stat), ...checks, pre], [
-    button('Close', 'ghost', closeModal),
-    button('Merge & restart', 'ok', () => confirmMerge(taskId)),
-  ]);
-}
-
-function confirmMerge(taskId) {
-  const t = tasks.get(taskId);
-  const failed = Object.entries(t?.self?.review?.checks || {}).filter(([, v]) => !v.ok).map(([k]) => k);
-  const pinIn = el('input', { type: 'password', inputMode: 'numeric', className: 'pin-in', placeholder: '••••', autocomplete: 'off', id: 'mergePin' });
-  const err = el('div', { className: 'err', role: 'alert' });
-  pinIn.addEventListener('input', () => { pinIn.classList.remove('invalid'); err.textContent = ''; });
-  const body = [
-    el('p', {}, 'This merges the change into the live Echo and restarts it. Running tasks are paused and resumed automatically. If the new version fails its health check, Echo rolls back on its own.'),
-    ...(failed.length ? [el('p', { className: 'err' }, `Warning: ${failed.join(' and ')} failed for this change.`)] : []),
-    ...(selfStatus.hasPin ? [el('label', { className: 'field', htmlFor: 'mergePin' }, 'Enter your PIN'), pinIn] : []),
-    err,
-  ];
-  const merge = actionButton('Merge & restart', 'ok', async () => {
-    if (selfStatus.hasPin && !pinIn.value.trim()) {
-      pinIn.classList.add('invalid');
-      err.textContent = 'Enter your PIN to merge.';
-      pinIn.focus();
-      return;
-    }
-    try {
-      await selfApi('/api/self/merge', { taskId, pin: pinIn.value });
-      closeModal();
-      els.restartOverlay.hidden = false;
-    } catch (e) {
-      if (/PIN/.test(e.message)) pinIn.classList.add('invalid');
-      err.textContent = e.message;
-    }
-  });
-  openModal('Merge and restart?', body, [button('Cancel', 'ghost', closeModal), merge], { narrow: true, onEnter: () => merge.click(), hint: 'Enter to merge' });
-  (selfStatus.hasPin ? pinIn : merge).focus();
-}
-
-els.pinSave.onclick = async () => {
-  try {
-    await selfApi('/api/self/pin', { newPin: els.pinNew.value, currentPin: els.pinCurrent.value });
-    els.pinNew.value = els.pinCurrent.value = '';
-    els.pinHint.textContent = 'PIN saved.';
-  } catch (e) {
-    els.pinHint.textContent = e.message;
-  }
-};
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !els.modal.hidden && !modalLocked) closeModal(); });
-
 /* ---------- Controls ---------- */
-els.mic.onclick = () => (listening ? stopListening() : startListening());
 // Space talks, except while typing or while a control has keyboard focus (then Space presses it).
 const typing = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) ||
   Boolean(document.activeElement?.closest?.('.controls, .menu') && document.activeElement.matches(':focus-visible'));
 let spaceHeld = false;
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { hush(); send({ type: 'interrupt' }); }
-  if (e.code === 'Space' && !typing() && !els.handsFree.checked && !wizard.isOpen() && els.modal.hidden) {
+  if (e.key === 'Escape') { hush(); send({ type: 'interrupt' }); if (autoListen.mode === 'answer') autoListen.close('escape'); }
+  // (In the Mac app the talk key is the shortcut, ⌃⌥ by default, from anywhere; Space is a space.)
+  if (e.code === 'Space' && !typing() && !inApp() && !els.handsFree.checked && !wizard.isOpen() && els.modal.hidden && !settingsPanel.isOpen()) {
     e.preventDefault();
-    if (!spaceHeld) { spaceHeld = true; startListening(); }
+    if (!spaceHeld) { spaceHeld = true; pttByShortcut = false; startListening(); }
   }
 });
 document.addEventListener('keyup', (e) => {
@@ -1843,37 +2185,21 @@ document.addEventListener('keyup', (e) => {
 
 els.handsFree.checked = pref.get('handsFree', false);
 els.speakOut.checked = pref.get('speakOut', true);
-renderVoiceButton();
-els.handsFree.onchange = () => {
-  pref.set('handsFree', els.handsFree.checked);
-  els.handsFree.checked ? startListening() : stopListening();
-  syncWake();
-  renderOrb();
-};
-els.speakOut.onchange = () => { pref.set('speakOut', els.speakOut.checked); if (!els.speakOut.checked) hush(); renderVoiceButton(); };
+els.setHandsFree.checked = els.handsFree.checked;
+// The old switch (Settings, the Mac app's menu) is the same thing as Listening and Resting.
+els.handsFree.onchange = () => setListenMode(els.handsFree.checked ? 'listening' : 'resting', 'menu');
+for (const b of $('listenSeg').children) /** @type {HTMLElement} */ (b).onclick = () => setListenMode(/** @type {HTMLElement} */ (b).dataset.mode || 'resting', 'menu');
+els.speakOut.onchange = () => { pref.set('speakOut', els.speakOut.checked); if (!els.speakOut.checked) hush(); };
 els.newConvo.onclick = () => send({ type: 'new_conversation' });
 els.suggestions.addEventListener('click', (e) => {
   const b = /** @type {HTMLElement} */ (e.target).closest('.suggestion');
   if (b) putInComposer(b.textContent);
 });
-/** Put text in the message box, ready to edit or send (never sent by itself). */
-function putInComposer(text) {
-  if (els.main.dataset.view !== 'chat') document.querySelector('.tab[data-view="chat"]')?.dispatchEvent(new Event('click'));
-  els.typeInput.value = text;
-  syncSend();
-  growInput();
-  els.typeInput.focus();
-  els.typeInput.setSelectionRange(text.length, text.length);
-}
 /** The idea buttons on the empty chat, tailored to what the person said they want help with. */
 function renderSuggestions() {
   els.suggestions.replaceChildren(...suggestionsFor(settings).map((t) => el('button', { type: 'button', className: 'suggestion' }, t)));
 }
-// The voice floats over the chat; keep the transcript's top padding matched to its height.
-new ResizeObserver(([e]) => {
-  els.hero.parentElement.style.setProperty('--hero-h', `${Math.round(e.borderBoxSize?.[0]?.blockSize ?? els.hero.offsetHeight)}px`);
-}).observe(els.hero);
-// Narrow windows show one pane at a time.
+// One pane at a time: Talk or Workers (Settings opens over either, public/settings.js).
 for (const tab of document.querySelectorAll('.tab')) {
   tab.onclick = () => {
     els.main.dataset.view = tab.dataset.view;
@@ -1881,184 +2207,28 @@ for (const tab of document.querySelectorAll('.tab')) {
       t.classList.toggle('on', t === tab);
       t.setAttribute('aria-selected', String(t === tab));
     }
+    // The Sky draws only while it is the pane in view.
+    if (tab.dataset.view === 'sky') { skyView.show(); tab.classList.remove('is-new'); pref.set('skySeen', true); } else skyView.hide();
   };
 }
-/* ---------- Composer: text and images ---------- */
-// The message box grows with what you type (up to 40% of the window, then scrolls). Enter
-// sends, Shift+Enter starts a new line. Images come in by paste, drag and drop or the paperclip;
-// each is shrunk in the page (about 1600px, under 1.5MB), uploaded right away and sent with
-// the message by reference.
-const MAX_EDGE = 1600;
-const MAX_BYTES = 1.5 * 1024 * 1024;
-const MAX_IMAGES = 6;
-/** @type {Array<{ key: number, preview: string, id: string | null, failed: boolean, ready: Promise<void>, node: HTMLElement }>} */
-let attachments = [];
-let attachKey = 0;
-
-// Send is quiet until there's something to send.
-function syncSend() {
-  els.sendBtn.disabled = !els.typeInput.value.trim() && !attachments.some((a) => !a.failed);
+/** The reply whose opening was already checked for a yes or a no. */
+let saidYesNoFor = '';
+/** Once per reply, at its first words. @param {{ trace?: string, text?: string }} msg */
+function nodWith(msg) {
+  if (!msg.trace || msg.trace === saidYesNoFor) return;
+  saidYesNoFor = msg.trace;
+  const m = yesOrNo(msg.text);
+  if (m) toApp({ type: 'companion', moment: m });
 }
-function growInput() {
-  const t = els.typeInput;
-  t.style.height = 'auto';
-  const max = Math.round(window.innerHeight * 0.4);
-  t.style.height = `${Math.min(t.scrollHeight, max)}px`;
-  t.classList.toggle('scrolls', t.scrollHeight > max);
-}
-els.typeInput.addEventListener('input', () => { syncSend(); growInput(); });
-window.addEventListener('resize', growInput);
-els.typeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    els.typeForm.requestSubmit();
-  }
-});
-
-/**
- * Shrink an image to fit MAX_EDGE and MAX_BYTES. Small PNG/WebP/GIF files that already fit are
- * kept as they are (screenshots stay crisp, GIFs keep moving); everything else becomes a JPEG.
- * @param {File} file
- * @returns {Promise<Blob>}
- */
-async function shrinkImage(file) {
-  const bmp = await createImageBitmap(file);
-  const fits = Math.max(bmp.width, bmp.height) <= MAX_EDGE && file.size <= MAX_BYTES;
-  if (fits && /^image\/(png|webp|gif|jpeg)$/.test(file.type)) { bmp.close(); return file; }
-  let scale = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bmp.width * scale));
-    canvas.height = Math.max(1, Math.round(bmp.height * scale));
-    const g = canvas.getContext('2d');
-    g.fillStyle = '#fff'; // JPEG has no transparency
-    g.fillRect(0, 0, canvas.width, canvas.height);
-    g.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    for (const q of [0.88, 0.8, 0.7]) {
-      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
-      if (blob && blob.size <= MAX_BYTES) { bmp.close(); return blob; }
-    }
-    scale *= 0.8;
-  }
-  bmp.close();
-  throw new Error('Image is too large');
-}
-
-async function uploadImage(blob) {
-  const res = await fetch('/api/attachments', { method: 'POST', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
-  const out = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(out.error || 'Upload failed');
-  return out;
-}
-
-/** @param {Iterable<File>} files */
-function addImages(files) {
-  const images = [...files].filter((f) => f.type.startsWith('image/'));
-  if (!images.length) return false;
-  const room = MAX_IMAGES - attachments.length;
-  if (images.length > room) toast(room > 0 ? `Only ${MAX_IMAGES} images per message; added the first ${room}.` : `Only ${MAX_IMAGES} images per message.`);
-  for (const file of images.slice(0, Math.max(0, room))) {
-    const key = ++attachKey;
-    const preview = URL.createObjectURL(file);
-    const node = el('div', { className: 'thumb busy' });
-    const img = el('img', { src: preview, alt: file.name || 'Pasted image' });
-    const rm = el('button', { type: 'button', className: 'rm', title: 'Remove' });
-    rm.setAttribute('aria-label', `Remove ${file.name || 'image'}`);
-    rm.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
-    rm.onclick = () => removeAttachment(key);
-    node.append(img, rm);
-    const item = { key, preview, id: null, failed: false, node, ready: null };
-    item.ready = shrinkImage(file)
-      .then(uploadImage)
-      .then((out) => { item.id = out.id; node.classList.remove('busy'); })
-      .catch((e) => {
-        item.failed = true;
-        node.classList.remove('busy');
-        node.classList.add('failed');
-        node.title = `Couldn't attach: ${e.message}`;
-        toast(`Couldn't attach ${file.name || 'that image'}: ${e.message}`);
-        syncSend();
-      });
-    attachments.push(item);
-    els.attachTray.append(node);
-  }
-  els.attachTray.hidden = !attachments.length;
-  syncSend();
-  return true;
-}
-function removeAttachment(key) {
-  const item = attachments.find((a) => a.key === key);
-  if (!item) return;
-  attachments = attachments.filter((a) => a !== item);
-  item.node.remove();
-  URL.revokeObjectURL(item.preview);
-  els.attachTray.hidden = !attachments.length;
-  syncSend();
-  els.typeInput.focus();
-}
-function clearAttachments() {
-  for (const a of attachments) { a.node.remove(); URL.revokeObjectURL(a.preview); }
-  attachments = [];
-  els.attachTray.hidden = true;
-}
-
-els.attachBtn.onclick = () => els.fileInput.click();
-els.fileInput.onchange = () => { addImages(els.fileInput.files || []); els.fileInput.value = ''; els.typeInput.focus(); };
-els.typeInput.addEventListener('paste', (e) => {
-  const files = [...(e.clipboardData?.files || [])];
-  if (files.some((f) => f.type.startsWith('image/'))) {
-    // Pasting a screenshot attaches it; any text in the clipboard still pastes as text.
-    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
-    addImages(files);
-  }
-});
-// Drag images anywhere over the chat.
-const convo = els.hero.parentElement;
-let dragDepth = 0;
-const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
-convo.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; els.dropVeil.hidden = false; });
-convo.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
-convo.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; els.dropVeil.hidden = true; } });
-convo.addEventListener('drop', (e) => {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  dragDepth = 0;
-  els.dropVeil.hidden = true;
-  if (!addImages(e.dataTransfer.files)) toast('Only images can be attached.');
-  els.typeInput.focus();
-});
-
-let sending = false;
-els.typeForm.onsubmit = async (e) => {
-  e.preventDefault();
-  const text = els.typeInput.value.trim();
-  if (sending || (!text && !attachments.some((a) => !a.failed))) return;
-  sending = true;
-  try {
-    await Promise.all(attachments.map((a) => a.ready));
-    const images = attachments.filter((a) => a.id).map((a) => a.id);
-    if (!text && !images.length) return;
-    sfx('send');
-    send({ type: 'user_text', text, typed: true, ...(images.length ? { images } : {}) });
-    els.typeInput.value = '';
-    clearAttachments();
-  } finally {
-    sending = false;
-    syncSend();
-    growInput();
-  }
-};
-
-/** Images in a chat bubble; each opens full size in a new tab. */
-function imageGrid(urls) {
-  const grid = el('div', { className: `msg-images${urls.length === 1 ? ' one' : ''}` });
-  grid.style.setProperty('--cols', String(Math.min(3, urls.length)));
-  for (const url of urls) {
-    const a = el('a', { href: url, target: '_blank', rel: 'noopener' });
-    a.append(el('img', { src: url, alt: 'Attached image' }));
-    grid.append(a);
-  }
-  return grid;
+// Sky: your days with Echo as constellations (public/ui/sky.js).
+const skyView = createSky($('sky'));
+$('skyToday').onclick = () => skyView.today();
+if (!pref.get('skySeen', false)) document.querySelector('.tab[data-view="sky"]')?.classList.add('is-new');
+/** Open the Sky (Echo was asked to show it), on today, playing it if asked. */
+function showSky(play = false) {
+  /** @type {any} */ (window).webkit?.messageHandlers?.echoApp?.postMessage({ type: 'showWindow' });
+  document.querySelector('.tab[data-view="sky"]')?.dispatchEvent(new Event('click'));
+  setTimeout(() => skyView.today({ play }), 700);
 }
 
 /* ---------- First-run setup, and Reset ---------- */
@@ -2070,19 +2240,16 @@ const wizard = createWizard({
   handsFree: () => els.handsFree.checked,
   useExample: putInComposer,
   hush,
+  // The "try it" demo and the Mac permissions (public/screen.js).
+  isMac: () => Boolean(nativeApp()),
+  toApp,
+  pointAt: pointAtElement,
   onFinish: () => {
     if (onboarding) onboarding.needed = false;
-    if (els.handsFree.checked) startListening();
+    syncEngine();
   },
 });
 
-function renderProjectsDir() {
-  const dir = settings.projectsDir || onboarding?.defaults?.projectsDir || '';
-  els.projectsDirShow.textContent = friendlyPath(dir, onboarding?.defaults?.home) || 'Not set yet';
-  els.projectsDirShow.title = dir;
-}
-els.changeFolder.onclick = () => { els.settings.hidden = true; wizard.open('files', { single: true, canClose: true }); };
-els.runSetup.onclick = () => { els.settings.hidden = true; wizard.open('welcome', { canClose: true }); };
 els.resetEcho.onclick = () => showReset();
 
 // Reset: wipe what Echo knows about you, restart, and start over with setup.
@@ -2115,7 +2282,7 @@ async function showReset() {
     if (hasPin && !pinIn.value.trim()) { pinIn.classList.add('invalid'); err.textContent = 'Enter your PIN to reset.'; pinIn.focus(); return; }
     try { lastPid = (await fetch('/api/health').then((r) => r.json())).pid; } catch {}
     try {
-      await selfApi('/api/reset', { confirm: 'RESET', pin: pinIn.value });
+      await postJson('/api/reset', { confirm: 'RESET', pin: pinIn.value });
     } catch (e) {
       if (/PIN/.test(e.message)) { pinIn.classList.add('invalid'); pinIn.select(); }
       err.textContent = e.message;
@@ -2156,7 +2323,7 @@ async function beginResetWait(prevPid) {
   if (!els.modal.hidden) closeModal();
   showRestarting('Resetting Echo…', 'This takes a few seconds. Your files are safe.');
   try {
-    for (const k of Object.keys(localStorage)) if (k.startsWith('voiceops.')) localStorage.removeItem(k);
+    for (const k of Object.keys(localStorage)) if (k.startsWith('echo.') || k.startsWith('voiceops.')) localStorage.removeItem(k);
   } catch {}
   let dropped = false;
   if (prevPid === undefined) {
@@ -2180,17 +2347,15 @@ async function beginResetWait(prevPid) {
   location.replace(location.pathname);
 }
 
-// Deep links for testing and screenshots: ?setup=<step>, ?settings=1 (or =help), ?reset=1.
+// Deep links for testing and screenshots: ?setup=<step>, ?settings=1 (or a section: =voice, =mac…), ?reset=1.
 async function startOnboarding() {
   try { onboarding = await fetch('/api/onboarding').then((r) => r.json()); } catch {}
-  renderProjectsDir();
   const params = new URLSearchParams(location.search);
   const step = params.get('setup');
   if (step !== null) {
     wizard.open(STEPS.includes(/** @type {any} */ (step)) ? step : 'welcome', { canClose: !onboarding?.needed, state: onboarding });
   } else if (params.has('settings')) {
-    openSettingsDrawer();
-    if (params.get('settings') === 'help') els.settings.scrollTop = $('helpSafety').offsetTop - 24;
+    openSettings(params.get('settings') || '');
   } else if (params.has('reset')) {
     showReset();
   } else if (onboarding?.needed) {
@@ -2198,96 +2363,25 @@ async function startOnboarding() {
   }
 }
 
+// What the views split out into public/ui/ need from here.
+setChatNote((text) => liveCap.note(text));
+setAssistantName(() => settings.assistantName);
+setRestartScreen(showRestarting);
+setOnTyped(() => {
+  sfx('send');
+  questionOpen = false; // answered by typing
+});
+
+// The companion glances down at the box when you start typing in it.
+els.typeInput.addEventListener('input', () => { if (els.typeInput.value.length === 1) viz.lookToward(els.typeInput); });
+// The first time Echo is opened each day it gives a small wave with the greeting.
+if (firstToday(pref.get('companionDay', ''))) {
+  pref.set('companionDay', dayKey());
+  setTimeout(() => viz.moment('wave'), 700);
+}
+
 loadSettings();
 connect();
 renderOrb();
 startOnboarding();
-if (els.handsFree.checked) startListening();
-
-/* ---------- Updates (lib/updater.js) ---------- */
-let updateStatus = null;
-let pageVersion = null; // the version this page was loaded from; a newer server means reload
-const PHASES = { checking: 'Checking…', downloading: 'Downloading…', verifying: 'Checking the download…', installing: 'Installing…', restarting: 'Restarting…' };
-function setUpdateStatus(st, notice) {
-  if (!st) return;
-  if (pageVersion && st.current !== pageVersion) { location.reload(); return; }
-  pageVersion ||= st.current;
-  updateStatus = st;
-  $('updVersion').textContent = `Echo ${st.current}`;
-  const hint = $('updHint');
-  const state = $('updState');
-  $('autoUpdateRow').hidden = st.developer || !st.configured;
-  $('updCheck').hidden = st.developer || !st.configured;
-  const back = $('updRollback');
-  back.hidden = st.developer || !st.previous;
-  back.textContent = st.previous ? `Go back to ${st.previous}` : 'Go back';
-  if (st.developer) {
-    state.textContent = '· Developer copy';
-    hint.textContent = 'This copy is a git checkout, so it updates through git and self-improve, not from releases.';
-  } else if (!st.configured) {
-    state.textContent = '';
-    hint.textContent = "Updates aren't set up for this copy.";
-  } else {
-    const pct = st.phase === 'downloading' && typeof st.progress === 'number' ? ` ${Math.round(st.progress * 100)}%` : '';
-    state.textContent = PHASES[st.phase] ? `· ${PHASES[st.phase]}${pct}` : st.available ? `· ${st.latest.version} is available` : st.checkedAt ? '· Up to date' : '';
-    hint.textContent = st.error || (st.checkedAt ? `Last checked ${new Date(st.checkedAt).toLocaleString()}.` : 'Echo checks for updates once a day.');
-  }
-  const card = $('updateCard');
-  const dismissed = pref.get('updateLater', '') === st.latest?.version;
-  card.hidden = !(st.available && (!dismissed || PHASES[st.phase] || st.phase === 'error'));
-  card.classList.toggle('is-working', Boolean(PHASES[st.phase]));
-  if (st.available) {
-    $('updateTitle').textContent = `Update available: v${st.latest.version}`;
-    $('updateSub').textContent = PHASES[st.phase] ? `${PHASES[st.phase]}${st.phase === 'downloading' && typeof st.progress === 'number' ? ` ${Math.round(st.progress * 100)}%` : ''}` : st.phase === 'error' ? st.error : `You have ${st.current}.`;
-    $('updateNotes').textContent = st.latest.notes || 'No notes for this release.';
-    $('updateNotesWrap').hidden = !st.latest.notes;
-  }
-  if (notice?.kind === 'updated') toast(`Echo was updated to ${notice.to}.`);
-  if (notice?.kind === 'rolled_back') toast(`The update to ${notice.from} didn't start properly, so Echo went back to ${notice.to}.`);
-}
-async function checkForUpdates() {
-  try {
-    const res = await fetch('/api/update/check', { method: 'POST' });
-    const st = await res.json();
-    if (!res.ok) throw new Error(st.error || 'Check failed');
-    pref.set('updateLater', '');
-    setUpdateStatus(st);
-    if (!st.developer && !st.available) toast(`Echo ${st.current} is up to date.`);
-  } catch (e) {
-    toast(e.message);
-  }
-}
-async function installUpdate() {
-  try {
-    const res = await fetch('/api/update/apply', { method: 'POST' });
-    const out = await res.json();
-    if (!res.ok) throw new Error(out.error || 'Update failed');
-    if (out.updated) showRestarting(`Installing Echo ${out.to}…`, 'Running tasks pause and pick up where they left off.');
-    else toast('Echo is already up to date.');
-  } catch (e) {
-    toast(e.message);
-  }
-}
-async function rollbackUpdate() {
-  const st = updateStatus;
-  if (!st?.previous) return;
-  const pinIn = el('input', { type: 'password', inputMode: 'numeric', className: 'pin-in', placeholder: '••••', autocomplete: 'off' });
-  const err = el('div', { className: 'err', role: 'alert' });
-  const go = actionButton(`Go back to ${st.previous}`, 'danger', async () => {
-    try {
-      await selfApi('/api/update/rollback', { pin: pinIn.value });
-      closeModal();
-      showRestarting(`Going back to Echo ${st.previous}…`);
-    } catch (e) {
-      err.textContent = e.message;
-    }
-  });
-  const body = [el('p', {}, `Echo ${st.current} is replaced by the version you had before (${st.previous}). Your data and settings stay as they are.`)];
-  if (selfStatus.hasPin) body.push(el('label', { className: 'field' }, 'Your PIN'), pinIn);
-  body.push(err);
-  openModal('Go back to the previous version?', body, [button('Cancel', 'ghost', closeModal), go], { narrow: true, onEnter: () => go.click() });
-}
-$('updCheck').onclick = checkForUpdates;
-$('updRollback').onclick = rollbackUpdate;
-$('updateNow').onclick = installUpdate;
-$('updateLater').onclick = () => { pref.set('updateLater', updateStatus?.latest?.version || ''); $('updateCard').hidden = true; };
+syncEngine();

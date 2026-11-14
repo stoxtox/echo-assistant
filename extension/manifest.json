@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Echo for Chrome",
+  "version": "1.2.0",
+  "description": "Lets Echo, your Mac assistant, read the page you're on and act on it precisely, with real clicks and typing it checks.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Echo", "default_popup": "options.html" },
+  "options_page": "options.html"
+}

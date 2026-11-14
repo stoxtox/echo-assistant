@@ -26,7 +26,7 @@ const fq = fakeQuery(async (turn, text, options) => {
   return [result('I made the greeting friendlier. Tests pass.')];
 });
 const tasks = new TaskManager({ queryFn: fq.queryFn });
-const self = new SelfImprove(tasks, { appDir: app, now: () => clock });
+const self = new SelfImprove(tasks, { access: { allowed: true, reason: 'test dev copy' }, appDir: app, now: () => clock });
 const audit = () => fs.readFileSync(path.join(dirs.data, 'self', 'audit.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).event);
 
 test('the assistant can only request an unlock, not grant one', () => {
@@ -196,11 +196,11 @@ test('review checks install changed packages first and run outside the live envi
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base', '--allow-empty'], { cwd: repo });
   fs.writeFileSync(
     path.join(repo, 'package.json'),
-    // Clean: no VOICEOPS_* or test-runner settings leak in; a fresh data folder; some free port
+    // Clean: no ECHO_* or test-runner settings leak in; a fresh data folder; some free port
     // that isn't the live one (tests must never depend on a particular port).
-    pkg(`node -e "const e=process.env; process.exit(!e.VOICEOPS_SUPERVISED && !e.NODE_TEST_CONTEXT && !e.VOICEOPS_ROOTS && Number(e.VOICEOPS_PORT) > 0 && e.VOICEOPS_PORT !== '${DEFAULT_PORT}' && e.VOICEOPS_DATA_DIR !== '${dirs.data}' && require('fs').existsSync('package-lock.json') ? 0 : 1)"`),
+    pkg(`node -e "const e=process.env; process.exit(!e.ECHO_SUPERVISED && !e.NODE_TEST_CONTEXT && !e.ECHO_ROOTS && Number(e.ECHO_PORT) > 0 && e.ECHO_PORT !== '${DEFAULT_PORT}' && e.ECHO_DATA_DIR !== '${dirs.data}' && require('fs').existsSync('package-lock.json') ? 0 : 1)"`),
   );
-  process.env.VOICEOPS_SUPERVISED = '1';
+  process.env.ECHO_SUPERVISED = '1';
   try {
     const checks = await runChecks(repo);
     assert.equal(checks.install?.ok, true, 'packages installed because package.json changed');
@@ -208,7 +208,7 @@ test('review checks install changed packages first and run outside the live envi
     assert.equal(checks.tests.ok, true, checks.tests.output);
     assert.equal(checks.typecheck.ok, true);
   } finally {
-    delete process.env.VOICEOPS_SUPERVISED;
+    delete process.env.ECHO_SUPERVISED;
   }
 });
 

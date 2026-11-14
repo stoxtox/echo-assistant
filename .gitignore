@@ -10,6 +10,8 @@ models/
 .echo-port
 .echo-node
 .echo-package
+# Marks the developer's own checkout, the only copy allowed to self-improve (lib/devcopy.js)
+.echo-dev
 # Output of `npm run package` and `npm run release`
 dist/
 # The updater's downloads, staging and the previous version (lib/updater.js)

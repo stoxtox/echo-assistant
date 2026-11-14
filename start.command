@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Double-click to start Echo in this window and open it in the browser (Chrome if installed).
 # Close the window (or press Control-C) to stop Echo.
-# Port: VOICEOPS_PORT, else the number in .echo-port, else 4777.
+# Port: ECHO_PORT (or the old name VOICEOPS_PORT), else the number in .echo-port, else 4777.
 # ECHO_NO_BROWSER=1 starts Echo without opening a browser.
 cd "$(dirname "$0")" || exit 1
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -12,14 +12,15 @@ saved="$(cat .echo-node 2>/dev/null)"
 if [ -n "$saved" ] && [ -x "$saved" ]; then export PATH="${saved:h}:$PATH"
 elif [ -x "$HOME/.echo/node/bin/node" ]; then export PATH="$HOME/.echo/node/bin:$PATH"; fi
 
-PORT="${VOICEOPS_PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port)}"
-export VOICEOPS_PORT="${PORT:-4777}"
-URL="http://localhost:$VOICEOPS_PORT"
+PORT="${ECHO_PORT:-${VOICEOPS_PORT:-}}"
+PORT="${PORT:-$(tr -dc '0-9' 2>/dev/null <.echo-port)}"
+export ECHO_PORT="${PORT:-4777}"
+URL="http://localhost:$ECHO_PORT"
 
 # Open the browser once Echo answers (up to a minute), not before.
 (
   for i in {1..120}; do
-    if curl -fsS --max-time 2 "http://127.0.0.1:$VOICEOPS_PORT/api/health" 2>/dev/null | grep -Eq '"ok": ?true'; then
+    if curl -fsS --max-time 2 "http://127.0.0.1:$ECHO_PORT/api/health" 2>/dev/null | grep -Eq '"ok": ?true'; then
       [ -n "$ECHO_NO_BROWSER" ] && { echo "Echo is ready at $URL"; exit 0; }
       open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
       exit 0

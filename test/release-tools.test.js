@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -268,4 +269,17 @@ test('release --current needs CHANGELOG notes for the version; a bump still bump
   assert.equal(JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).version, '2.0.1');
   assert.equal(git(app, 'log', '-1', '--format=%s'), 'Release v2.0.1');
   assert.equal(git(app, 'tag', '--list', 'v2.0.1'), 'v2.0.1');
+});
+
+test('the release gate: on by default from the command line, off with --no-gate; a failing gate blocks the release before anything changes', async () => {
+  assert.equal(Rel.parseReleaseArgs([]).gate, Rel.releaseGate);
+  assert.equal(Rel.parseReleaseArgs(['--no-gate']).gate, null);
+  const app = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-gate-'));
+  fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'echo', version: '1.2.0' }));
+  fs.writeFileSync(path.join(app, 'echo-release.json'), JSON.stringify({ owner: 'someone', repo: 'echo' }));
+  fs.writeFileSync(path.join(app, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Something.\n');
+  await assert.rejects(() => Rel.release({ appDir: app, useGit: false, edit: false, gate: () => ({ ok: false, why: 'a golden task failed' }) }), /release gate failed: a golden task failed\. Nothing was changed/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).version, '1.2.0', 'no version bump');
+  const golden = fs.readFileSync(path.join(import.meta.dirname, '..', 'scripts', 'golden.js'), 'utf8');
+  assert.match(golden, /if \(args\.includes\('--gate'\) && \(passAll\.length < byTask\.size \|\| lies > 0\)\) \{[\s\S]{0,140}process\.exitCode = 1;/);
 });

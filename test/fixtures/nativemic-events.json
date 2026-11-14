@@ -1,0 +1,21 @@
+{
+  "about": "The events the Mac app's mic sends the page, and the fields each one carries. Both sides are tested against this one table: macos/Tests/Voice/main.swift builds every event with the app's own code (MicEvent in VoiceMath.swift) and compares its fields; test/nativemic.test.js checks that the page (AppMic in public/nativemic.js) reads only these fields, and that the fake app the page is tested with sends only these.",
+  "states": ["idle", "armed", "hearing", "finishing"],
+  "reasons": ["ptt", "wake", "window", "run", "handsfree"],
+  "drops": ["too_short", "silent", "spoiled", "mode", "not_wake", "cancelled"],
+  "final": ["text", "ms", "locale", "words"],
+  "events": {
+    "state": { "fields": ["engine", "state", "reason", "since", "windowLeftMs", "running", "permission", "voiceProcessing", "appleReady"], "optional": [] },
+    "onset": { "fields": ["reason", "echo", "bargeIn", "manual"], "optional": [] },
+    "wake": { "fields": [], "optional": [] },
+    "partial": { "fields": ["text"], "optional": [] },
+    "level": { "fields": ["level"], "optional": [] },
+    "warn": { "fields": ["what"], "optional": [] },
+    "error": { "fields": ["message"], "optional": [] },
+    "dropped": { "fields": ["reason", "arm", "seconds", "bargeIn"], "optional": [] },
+    "utterance": {
+      "fields": ["reason", "label", "wav", "live", "seconds", "peak", "onsetAt", "endAt", "level", "voicedMs", "aec", "bargeIn"],
+      "optional": ["final", "timedOut"]
+    }
+  }
+}

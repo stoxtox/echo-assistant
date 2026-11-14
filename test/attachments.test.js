@@ -59,6 +59,7 @@ test('the dispatcher gets attached images as image blocks, plus their paths for 
   // Images alone still make a message; plain text stays plain.
   d.send('', {}, [findAttachment(a.id)]);
   assert.match(pushed[1].at(-1).text, /just the attached image/);
+  d.busy = false; // (said while busy, it would wait for the reply under way to end)
   d.send('hello');
   assert.equal(typeof pushed[2], 'string');
   assert.match(new Dispatcher(new TaskManager({ queryFn: async function* () {} })).systemPrompt(), /attach images/);

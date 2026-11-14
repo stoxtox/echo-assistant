@@ -61,8 +61,8 @@ await new Promise((r) => server.listen(0, '127.0.0.1', () => r(null)));
 const GH = `http://127.0.0.1:${/** @type {any} */ (server.address()).port}`;
 
 /** @type {Record<string, string | undefined>} */
-const ENV = { ...process.env, ECHO_REPO: 'sim/echo', ECHO_GITHUB_API: `${GH}/api`, VOICEOPS_ROOTS: config.roots.join(':'), npm_config_update_notifier: 'false' };
-for (const k of Object.keys(ENV)) if (/^(VOICEOPS_(?!ROOTS)|npm_(?!config_update)|NODE_TEST)/.test(k)) delete ENV[k];
+const ENV = { ...process.env, ECHO_REPO: 'sim/echo', ECHO_GITHUB_API: `${GH}/api`, ECHO_ROOTS: config.roots.join(':'), npm_config_update_notifier: 'false' };
+for (const k of Object.keys(ENV)) if (/^(VOICEOPS_|ECHO_(?!ROOTS|REPO$|GITHUB_API$)|npm_(?!config_update)|NODE_TEST)/.test(k)) delete ENV[k];
 /** @param {string} cmd @param {string[]} args @param {any} [opts] */
 const run = (cmd, args, opts = {}) => String(execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: ENV, ...opts }));
 // The stand-in GitHub runs in this process, so anything that downloads from it must not block.
@@ -161,7 +161,7 @@ fs.mkdirSync(path.join(SIM, 'projects'), { recursive: true });
 fs.mkdirSync(path.join(SIM, 'logs'), { recursive: true });
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ userName: 'Sim User', onboarded: true }, null, 2));
 fs.writeFileSync(path.join(DATA, 'memory.md'), 'Sim User likes tea.\n');
-const serverEnv = { ...ENV, HOME, VOICEOPS_PORT: String(PORT), VOICEOPS_DATA_DIR: DATA, VOICEOPS_LOG_DIR: path.join(SIM, 'logs'), VOICEOPS_ROOTS: path.join(SIM, 'projects'), VOICEOPS_HEALTH_TIMEOUT_MS: '25000', VOICEOPS_TITLES: 'off', ECHO_UPDATE_CHECKS: 'off' };
+const serverEnv = { ...ENV, HOME, ECHO_PORT: String(PORT), ECHO_DATA_DIR: DATA, ECHO_LOG_DIR: path.join(SIM, 'logs'), ECHO_ROOTS: path.join(SIM, 'projects'), ECHO_HEALTH_TIMEOUT_MS: '25000', ECHO_TITLES: 'off', ECHO_UPDATE_CHECKS: 'off' };
 log('starting the installed Echo on port', String(PORT));
 const sup = spawn(read(APP, '.echo-node').trim(), ['supervisor.js'], { cwd: APP, env: serverEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 let supOut = '';
